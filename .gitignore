@@ -1,0 +1,10 @@
+/config.json
+/state/
+/dist/
+/folderlight
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+*.pem
+*.key

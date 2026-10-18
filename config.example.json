@@ -1,0 +1,8 @@
+{
+  "library": "/srv/photos",
+  "state": "/var/lib/folderlight",
+  "listen": "127.0.0.1:8080",
+  "cache_bytes": 5368709120,
+  "workers": 1,
+  "max_pixels": 40000000
+}

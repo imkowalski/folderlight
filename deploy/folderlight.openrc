@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+name="Folderlight"
+description="Read-only photo gallery"
+command="/usr/local/bin/folderlight"
+command_args="-config /etc/folderlight/config.json"
+command_user="folderlight:folderlight"
+directory="/var/lib/folderlight"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+output_log="/var/log/folderlight.log"
+error_log="/var/log/folderlight.log"
+
+depend() {
+    need net localmount
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --owner folderlight:folderlight --mode 0700 /var/lib/folderlight
+    checkpath --file --owner folderlight:folderlight --mode 0600 /var/log/folderlight.log
+    if [ ! -r /etc/folderlight/config.json ]; then
+        eerror "Missing /etc/folderlight/config.json"
+        return 1
+    fi
+}

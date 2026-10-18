@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="theme-color" content="#f6f5f0">
+  <title>Folderlight · Photo library</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <a href="#content" class="skip">Skip to photos</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Folderlight home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="brand-name">folderlight<span class="brand-dot">.</span></span></a>
+    <form id="search-form" role="search" class="nav-search">
+      <div class="search-wrap">
+        <label class="search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 5 5"></path></svg><span class="sr-only">Search filenames and tags</span><input id="search" type="search" role="combobox" aria-label="Search filenames and tags" aria-autocomplete="list" aria-controls="tag-options" aria-expanded="false" aria-describedby="search-help" placeholder="Search files or tag:…" maxlength="512" autocomplete="off" spellcheck="false"><button class="search-go" type="submit" aria-label="Search"><span class="search-button-label">Search</span><span class="search-submit-icon" aria-hidden="true">↵</span></button></label>
+        <div id="tag-suggestions" class="suggestions" hidden>
+          <div class="suggestion-heading"><span>LIBRARY TAGS</span><span id="suggestion-scope"></span></div>
+          <div id="tag-options" role="listbox" aria-label="Tag suggestions"></div>
+          <p id="suggestion-status" class="suggestion-status" role="status"></p>
+          <p id="search-help" class="search-help">Type a filename or select a tag. Exact tag: <code>tag:Ærø</code> · with spaces: <code>tag:"Family holiday"</code><span>↑ ↓ to choose · Enter to select</span></p>
+        </div>
+      </div>
+      <label class="select-box scope-box" title="Search scope"><span class="sr-only">Search scope</span><span class="scope-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8Z"/></svg></span><select id="scope"><option value="tree">Folder + subfolders</option><option value="folder">This folder only</option><option value="all">Entire library</option></select></label>
+    </form>
+    <button id="scan-toggle" class="button quiet" aria-label="Library status" aria-controls="scan-panel" aria-expanded="false"><span class="status-dot" id="status-dot"></span><span id="scan-label">Library status</span></button>
+  </header>
+  <aside id="scan-panel" hidden aria-label="Library scanning">
+    <div><strong id="scan-title">Library status</strong><button class="icon-button" id="scan-close" aria-label="Close library status">×</button></div>
+    <p id="scan-message" role="status">Connecting…</p><p id="scan-counts" class="muted"></p><p id="scan-current" class="mono"></p>
+    <label class="check"><input type="checkbox" id="force"> Re-read all metadata, even unchanged files</label>
+    <button class="button primary" id="rescan">Scan library</button>
+  </aside>
+  <main id="content">
+    <nav id="breadcrumbs" aria-label="Folder breadcrumbs"></nav>
+    <div class="heading-row"><div><h1 id="title">Library</h1><p id="subtitle" class="subtitle"></p></div><label class="select-box sort"><span class="sr-only">Sort images and folders</span><select id="sort"><option value="name">Name A–Z</option><option value="date">Newest first</option></select></label></div>
+
+    <div id="tag-filter" hidden class="filter-bar"><span>Filtered by tag</span><button id="clear-tag" class="tag"></button><button class="text-button" id="clear-search">Clear filters</button></div>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="loading" class="loading" role="status">Opening your library…</div>
+    <section id="folders-section" hidden aria-labelledby="folders-title"><div class="section-heading"><h2 id="folders-title">Folders <span id="folder-count"></span></h2></div><div id="folders" class="folder-grid"></div></section>
+    <section id="photos-section" hidden aria-labelledby="photos-title"><div class="section-heading"><h2 id="photos-title">Photographs <span id="photo-count"></span></h2></div><div id="photos" class="photo-grid"></div></section>
+    <div id="empty" hidden class="empty"><div class="empty-symbol" aria-hidden="true">▧</div><h2 id="empty-title">A quiet little corner.</h2><p id="empty-message">No photographs here yet.</p><button id="empty-action" class="button quiet" hidden>Clear filters</button></div>
+    <nav class="pagination" id="pagination" hidden aria-label="Gallery pages"><button id="previous" class="button quiet">← Previous</button><span id="page-label"></span><button id="next" class="button quiet">Next →</button></nav>
+    <footer><span class="read-only">Read-only library</span></footer>
+  </main>
+  <dialog id="viewer" aria-labelledby="viewer-title">
+    <div class="viewer-bar"><div><p id="viewer-position" class="small"></p><h2 id="viewer-title"></h2></div><div><button class="viewer-button" id="info-toggle" aria-label="Toggle image details" aria-expanded="false">ⓘ <span>Details</span></button><button class="viewer-button" id="viewer-close" aria-label="Close photo viewer">×</button></div></div>
+    <div class="viewer-body"><div id="image-stage" class="image-stage"><p id="viewer-loading" role="status">Loading preview…</p><img id="viewer-image" alt=""><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous photograph">‹</button><button id="viewer-next" class="viewer-arrow next" aria-label="Next photograph">›</button><div id="viewer-error" role="alert" hidden></div></div>
+    <aside id="details" hidden><p class="eyebrow">THE DETAILS</p><h3>Image details</h3><dl id="metadata"></dl><h4>Tags</h4><div id="viewer-tags" class="tags"></div><button id="open-folder" class="viewer-button">Open containing folder ↗</button></aside></div>
+    <div class="viewer-footer"><span>← → to explore</span><span>Swipe to browse · Esc to close</span></div>
+  </dialog>
+</body>
+</html>
