@@ -25,12 +25,13 @@ func run() error {
 	scanOnly := flag.Bool("scan", false, "scan library and exit")
 	force := flag.Bool("force", false, "re-read all metadata during startup scan")
 	version := flag.Bool("version", false, "print version")
+	resetPassword := flag.Bool("reset-password", false, "remove the gallery password (local administrator recovery)")
 	flag.Parse()
 	if *version {
-		fmt.Println("Folderlight 1.1.1")
+		fmt.Println("Folderlight " + Version)
 		return nil
 	}
-	cfg, err := loadConfig(*configFile)
+	cfg, err := loadConfig(*configFile, *resetPassword)
 	if err != nil {
 		return err
 	}
@@ -45,6 +46,13 @@ func run() error {
 		return err
 	}
 	defer store.db.Close()
+	if *resetPassword {
+		_, err := store.db.Exec(`DELETE FROM settings WHERE key='app_password'`)
+		if err == nil {
+			fmt.Println("Gallery password removed. Open Settings to set a new password; the gallery is now accessible without a login.")
+		}
+		return err
+	}
 	indexer := &Indexer{store: store, config: cfg}
 	indexer.start(ctx, *force)
 	if *scanOnly {

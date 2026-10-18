@@ -13,7 +13,6 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -23,11 +22,7 @@ import (
 )
 
 func supported(name string) bool {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
-		return true
-	}
-	return false
+	return mediaKind(name) != ""
 }
 func cleanTags(in []string) []string {
 	out := []string{}

@@ -2,7 +2,7 @@
 
 A compact, folder-first photo gallery for Alpine Linux. Point it at an existing, read-only directory. Browse folders, preview images, and search the filenames and tags already embedded in your photographs.
 
-The server is one statically linked executable with its web interface and SQLite engine included. There is no runtime requirement for Go, Node.js, Python, SQLite CLI, ExifTool, FFmpeg, Docker, or an external database. The browser loads no external scripts, fonts, analytics, or services.
+The server is one statically linked executable with its web interface and SQLite engine included. JPEG, PNG, WebP, and GIF need no extra software. RAW, HEIC, and video support uses optional native media packages described below. No Go, Node.js, Python, SQLite CLI, Docker, or external database service is required on the server. The browser loads no external scripts, fonts, analytics, or services.
 
 Download Linux x86-64 and ARM64 packages from [GitHub Releases](https://github.com/imkowalski/folderlight/releases/latest). Source code is available at [imkowalski/folderlight](https://github.com/imkowalski/folderlight).
 
@@ -29,7 +29,7 @@ chmod +x ./folderlight-linux-amd64
 
 Open `http://127.0.0.1:8080`. Startup automatically scans the library in the background; browsing becomes available as images are indexed. Subsequent starts reuse the database and inspect only changed image metadata. Thumbnails are generated when viewed, rather than during the scan.
 
-For direct LAN access, explicitly set `"listen": "0.0.0.0:8080"` and browse `http://SERVER_IP:8080`. For remote access, use a VPN or your authenticated HTTPS reverse proxy. There are no built-in accounts. The complete configured library is available to every connected visitor. Robots directives discourage search-engine indexing; they are not access control.
+For direct LAN access, explicitly set `"listen": "0.0.0.0:8080"` and browse `http://SERVER_IP:8080`. For remote access, use a VPN or HTTPS reverse proxy. An optional shared gallery password is available in **Settings**, in the same panel as Rescan. Password protection is off initially; enable it before granting access to others. There are no individual accounts or roles. Robots directives discourage search-engine indexing; they are not access control.
 
 ## Native Alpine service
 
@@ -64,7 +64,43 @@ tail -n 30 /var/log/folderlight.log
 
 For network-mounted libraries, ensure the mount is ready before starting the service; add the relevant mount/service dependency to the OpenRC script. Rotate `/var/log/folderlight.log` through your normal logging setup.
 
-Mount the library read-only at the OS/container layer for an additional guarantee. Folderlight itself opens source files for reading and rejects state directories that overlap the library. It neither uploads, edits, deletes, nor reorganizes source images. Its HTTP API serves generated JPEG previews, not arbitrary source files.
+Mount the library read-only at the OS/container layer for an additional guarantee. Folderlight itself opens source files for reading and rejects state directories that overlap the library. It neither uploads, edits, deletes, nor reorganizes source media. Its HTTP API serves generated JPEG and MP4 previews, not arbitrary source files.
+
+## Settings, password protection, and recovery
+
+The top-right **Settings** button opens version information, scan controls, gallery password settings, and media-tool status. Set a password of at least eight characters to require sign-in for the entire gallery: browsing, search, tags, image details, thumbnails, previews, video, scan status, rescans, and settings changes. All signed-in visitors share the same access and can change settings.
+
+Passwords are stored as salted PBKDF2-SHA256 hashes (600,000 iterations) in the state database, never as plaintext in config. Sessions use signed, HttpOnly, SameSite=Strict cookies lasting eight hours. Password changes invalidate previous sessions. Log out through Settings. Login requests are limited to ten per minute across the instance. HTTPS reverse proxies should forward `X-Forwarded-Proto: https` so session cookies are marked Secure. Use HTTPS for password sign-in across untrusted networks.
+
+If you forget the password, run this **inside your Alpine container as root**; it executes recovery as the service account so database files retain suitable ownership:
+
+```sh
+su -s /bin/sh folderlight -c '/usr/local/bin/folderlight -config /etc/folderlight/config.json -reset-password'
+```
+
+The reset takes effect immediately, including while the service runs. It removes password protection; open Settings and save a new password afterward. It also works when the NAS/library directory is unavailable. Local access to the writable state directory is required. No image files or index entries are removed. A restored state backup also restores its password hash. **Downgrading to versions before 1.2 disables gallery authentication**, because those versions do not implement it.
+
+## Optional RAW, HEIC, and video support
+
+On Alpine, enable the community repository for your installed release if needed, then install inside the container:
+
+```sh
+apk add --no-cache ffmpeg libheif-tools libraw-tools exiftool
+```
+
+These optional packages have their own dependencies and increase disk/memory use. Normal image browsing still works without them. Settings reports which tools are available. If you install tools after files have already been indexed, run **Scan library → Re-read all metadata** to refresh their tags and dimensions.
+
+| Media | Support and required tools |
+| --- | --- |
+| RAW | DNG, NEF/NRW, CR2/CR3/CRW, ARW/SRF/SR2, RAF, ORF, RW2, PEF, SRW, and other listed camera RAW extensions; `dcraw_emu` from LibRaw plus `exiftool`. Camera/model support depends on the installed LibRaw release. |
+| HEIC/HEIF/HIF | Primary still image through `heif-thumbnailer` from libheif, plus `exiftool`. Installed codec plugins must support the source encoding. |
+| Video | MP4/MOV/M4V/3GP, MKV/WebM, AVI, MTS/M2TS, MPEG, WMV, OGV; `ffmpeg` and `ffprobe`. Codec support depends on the installed FFmpeg build. |
+
+RAW/HEIC tags are read from embedded XPKeywords, Keywords, and XMP Subject through ExifTool. Video tags are read from equivalent embedded fields when the container exposes them. Unsupported/missing metadata remains searchable by filename. Sidecars are not read. RAW previews use LibRaw's half-size development with camera white balance; they are previews rather than a color-managed RAW editor.
+
+Video cards show a static thumbnail. Open a video to prepare a cached H.264/AAC MP4 preview, with native controls, audio, and seeking. Output fits within 1280 pixels without upscaling. The first playback requires transcoding and can take several minutes; subsequent playback uses the cache. Video previews share the configured cache limit and bounded worker queue with images. Each video preview is capped at the smaller of 512 MiB and `cache_bytes`, with a ten-minute conversion timeout. Oversized, truncated, unsupported, or failed previews show an error. This is not a full media streaming/transcoding server.
+
+Helpers receive verified read-only file descriptors, not library filenames or shell commands. Temporary and generated files stay in the state directory. Video inputs use fixed container demuxers and disable network protocols. `max_pixels` is checked before image/video conversion where dimensions are available, and again before Go image decoding. External decoders have their own memory use; the Go memory target is not a cap on helper processes. Keep media packages updated through Alpine.
 
 ## Update from GitHub on Alpine / Proxmox
 
@@ -99,7 +135,7 @@ The updater changes only `/usr/local/bin/folderlight` and its previous-binary co
 
 For existing config/service files that need changes in a future version, follow that version's release notes. Do not use `git pull` as a server update: the server needs the compiled release executable, and does not need Git or Go installed. Updating starts the usual incremental library scan.
 
-Maintainers: pushes to `main` run verification. To publish a release, update the version in `main.go`, commit the changes, create a matching `vX.Y.Z` tag, and push it. GitHub Actions runs the checks, builds both static executables, and publishes their archives and checksums. Keep the tag and executable version consistent.
+Maintainers: pushes to `main` run verification. To publish a release, update the `Version` constant in `version.go`, commit the changes, create a matching `vX.Y.Z` tag, and push it. GitHub Actions runs the checks, builds both static executables, and publishes their archives and checksums. Keep the tag and executable version consistent.
 
 ## Configuration
 
@@ -131,7 +167,7 @@ The app sets a soft Go memory target of 256 MiB unless `GOMEMLIMIT` is supplied.
 - Folder, search, scope, sort, page, and the open viewer image are bookmarkable in the URL.
 - Use the viewer's arrows, left/right keys, or horizontal swipes to move through the current result set, including across page boundaries. Escape closes the viewer.
 
-JPEG/JPG, PNG, WebP, and GIF are supported. GIFs and animated WebP/PNG use a static frame for previews. Thumbnails fit inside 480 px; viewer previews fit inside 1600 px. EXIF orientation is applied without modifying originals. Transparency is composited onto a light background. Previews are JPEG and contain no copied EXIF/GPS metadata. This is a preview gallery rather than a color-managed editing application.
+JPEG/JPG, PNG, WebP, and GIF work natively; RAW, HEIC, and video require the optional packages above. GIFs and animated WebP/PNG use a static frame for previews. Thumbnails fit inside 480 px; still viewer previews fit inside 1600 px. EXIF orientation is applied without modifying originals. Transparency is composited onto a light background. Still previews are JPEG and contain no copied EXIF/GPS metadata. Video previews omit source metadata and chapters. This is a preview gallery rather than a color-managed editing application.
 
 Embedded tag sources are Windows `XPKeywords` (UTF-16LE, semicolon separated), IPTC Keywords, and XMP Dublin Core subjects in JPEG/PNG/WebP containers where those fields are supported. GIF metadata is not parsed. PNG international-text XMP and compressed XMP are supported. Tags are trimmed, Unicode-normalized for matching, and deduplicated without replacing their display spelling. Standard PNG `Keywords` text is also recognized. Legacy IPTC uses its declared character set, falling back to Latin-1 when no encoding is declared. No tags are guessed from the directory name, and no sidecar files are read.
 
@@ -161,7 +197,14 @@ If you intentionally replace or relocate the library root, stop the app and conf
 | `GET /api/photo` | `id`; filename, relative folder/path, dimensions, dates, tags, warning |
 | `GET /api/image` | `id`, `size=thumb\|preview`; cached JPEG, private ETag |
 | `GET /api/status` | Current/last scan progress, counters, and most recent warning |
+| `GET /api/settings` | Version, password-enabled/authenticated flags, media-tool status when authenticated |
+| `POST /api/login` | JSON `{"password":"…"}`; sets the session cookie |
+| `POST /api/logout` | Clears the browser session cookie |
+| `POST /api/password` | JSON `{"password":"…"}` changes/enables protection; explicit empty string removes it; requires current session when enabled |
+| `GET /api/video` | `id`, optional `prepare=1`; prepare returns JSON `ready`, HTTP 202 while converting, otherwise serves range-capable MP4 |
 | `POST /api/rescan` | Optional `force=1`; requires `X-Folderlight-Request: 1` and a matching Origin when supplied |
+
+All API mutations require `X-Folderlight-Request: 1` and a matching Origin when provided. When a password is enabled, all API endpoints except settings/login require a valid session. Unauthenticated settings responses expose only version/authentication flags, never library contents or tool details. Startup scans remain automatic, regardless of whether a visitor has signed in.
 
 Folder paths are relative POSIX paths. Dates are Unix seconds except `mtime`, which is Unix nanoseconds. Image IDs remain stable for existing paths during normal rescans. API failures return JSON `{"error":"…"}`. Image generation can return 503 with `Retry-After: 2` when its bounded queue is full; clients should retry. Invalid or oversized images return 422. Deploy the app at the root of its hostname; URL subpath hosting is not supported.
 
@@ -177,6 +220,8 @@ go vet ./...
 node --test scripts/search-ui.test.cjs
 sh scripts/build.sh
 ```
+
+For optional media integration tests in Alpine after installing the media packages, run `FOLDERLIGHT_MEDIA_TEST=1 CGO_ENABLED=0 go test -run TestRealMediaDecoders -v`. Tests generate synthetic HEIC/video fixtures and use `testdata/synthetic.dng`; no private library is needed. On a development machine, a static `go test -c` binary can be run inside Alpine without installing Go there. A mounted `/proc` is needed for verified descriptor input to helpers (normal Alpine/LXC deployments already provide it).
 
 Both executables, release archives, checksums, and dependency licenses are written to `dist/`. No C compiler is needed. For a race check on a development machine with a C compiler, use `go test -race ./...`.
 

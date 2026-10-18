@@ -18,10 +18,11 @@ import (
 var assets embed.FS
 
 type App struct {
-	store   *Store
-	indexer *Indexer
-	cache   *ImageCache
-	ctx     context.Context
+	store      *Store
+	indexer    *Indexer
+	cache      *ImageCache
+	ctx        context.Context
+	loginLimit loginLimiter
 }
 
 func jsonResponse(w http.ResponseWriter, status int, v any) {
@@ -35,6 +36,13 @@ func apiError(w http.ResponseWriter, status int, message string) {
 }
 func (a *App) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/settings", a.settings)
+	mux.HandleFunc("POST /api/login", a.login)
+	mux.HandleFunc("POST /api/password", a.savePassword)
+	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
+		setSession(w, r, "")
+		jsonResponse(w, 200, map[string]bool{"authenticated": false})
+	})
 	mux.HandleFunc("GET /api/browse", a.browse)
 	mux.HandleFunc("GET /api/search", a.browse)
 	mux.HandleFunc("GET /api/tags", a.tags)
@@ -45,6 +53,7 @@ func (a *App) handler() http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /api/image", a.image)
+	mux.HandleFunc("GET /api/video", a.video)
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, a.indexer.snapshot()) })
 	mux.HandleFunc("POST /api/rescan", func(w http.ResponseWriter, r *http.Request) {
 		// Custom header and strict Origin checks prevent cross-site scan triggers.
@@ -77,7 +86,28 @@ func (a *App) handler() http.Handler {
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if r.Method != "GET" && r.Method != "HEAD" {
+				origin := r.Header.Get("Origin")
+				u, err := url.Parse(origin)
+				if r.Header.Get("X-Folderlight-Request") != "1" || (origin != "" && (err != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https"))) {
+					apiError(w, 403, "cross-origin or missing request header")
+					return
+				}
+			}
+			if r.URL.Path != "/api/settings" && r.URL.Path != "/api/login" {
+				credential, err := a.credential(r)
+				if err != nil {
+					apiError(w, 500, "could not read authentication settings")
+					return
+				}
+				if !loggedIn(r, credential) {
+					apiError(w, 401, "sign in to open this gallery")
+					return
+				}
+			}
+		}
 		mux.ServeHTTP(w, r)
 	})
 }

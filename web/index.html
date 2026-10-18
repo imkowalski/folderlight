@@ -5,14 +5,21 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#f6f5f0">
-  <title>Folderlight · Photo library</title>
+  <title>Folderlight · Media library</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <script defer src="/app.js"></script>
 </head>
 <body>
+  <section id="login-screen" class="login-screen" hidden aria-labelledby="login-title">
+    <form id="login-form" class="login-card">
+      <p class="eyebrow">FOLDERLIGHT</p><h1 id="login-title">Open your gallery</h1>
+      <label for="login-password">Gallery password</label><input id="login-password" type="password" autocomplete="current-password" maxlength="1024" required>
+      <button class="button primary" type="submit" id="login-submit">Sign in</button><p id="login-error" role="alert"></p><p id="login-version" class="muted"></p>
+    </form>
+  </section>
   <a href="#content" class="skip">Skip to photos</a>
-  <header class="topbar">
+  <header class="topbar" id="app-header">
     <a class="brand" href="/" aria-label="Folderlight home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="brand-name">folderlight<span class="brand-dot">.</span></span></a>
     <form id="search-form" role="search" class="nav-search">
       <div class="search-wrap">
@@ -26,13 +33,20 @@
       </div>
       <label class="select-box scope-box" title="Search scope"><span class="sr-only">Search scope</span><span class="scope-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8Z"/></svg></span><select id="scope"><option value="tree">Folder + subfolders</option><option value="folder">This folder only</option><option value="all">Entire library</option></select></label>
     </form>
-    <button id="scan-toggle" class="button quiet" aria-label="Library status" aria-controls="scan-panel" aria-expanded="false"><span class="status-dot" id="status-dot"></span><span id="scan-label">Library status</span></button>
+    <button id="scan-toggle" class="button quiet" aria-label="Settings and library status" aria-controls="scan-panel" aria-expanded="false"><span class="status-dot" id="status-dot"></span><span id="scan-label">Settings</span></button>
   </header>
-  <aside id="scan-panel" hidden aria-label="Library scanning">
-    <div><strong id="scan-title">Library status</strong><button class="icon-button" id="scan-close" aria-label="Close library status">×</button></div>
+  <aside id="scan-panel" hidden aria-label="Gallery settings">
+    <div><strong>Settings</strong><button class="icon-button" id="scan-close" aria-label="Close settings">×</button></div>
+    <p class="muted" id="app-version">Folderlight</p>
+    <h2 class="settings-heading" id="scan-title">Library status</h2>
     <p id="scan-message" role="status">Connecting…</p><p id="scan-counts" class="muted"></p><p id="scan-current" class="mono"></p>
     <label class="check"><input type="checkbox" id="force"> Re-read all metadata, even unchanged files</label>
     <button class="button primary" id="rescan">Scan library</button>
+    <h2 class="settings-heading">Gallery password</h2><p id="password-status" class="muted"></p>
+    <form id="password-form"><label for="new-password">New password</label><input id="new-password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" required placeholder="At least 8 characters"><button class="button quiet" type="submit">Save password</button></form>
+    <div class="settings-actions"><button id="disable-password" class="text-button" hidden>Remove password</button><button id="logout" class="text-button" hidden>Sign out</button></div><p id="password-message" role="status"></p>
+    <h2 class="settings-heading">Media support</h2><p id="media-status" class="muted"></p>
+    <p class="muted small">Optional tools enable RAW, HEIC, and video previews. Install instructions are in the README.</p>
   </aside>
   <main id="content">
     <nav id="breadcrumbs" aria-label="Folder breadcrumbs"></nav>
@@ -42,14 +56,14 @@
     <div id="error" class="error" role="alert" hidden></div>
     <div id="loading" class="loading" role="status">Opening your library…</div>
     <section id="folders-section" hidden aria-labelledby="folders-title"><div class="section-heading"><h2 id="folders-title">Folders <span id="folder-count"></span></h2></div><div id="folders" class="folder-grid"></div></section>
-    <section id="photos-section" hidden aria-labelledby="photos-title"><div class="section-heading"><h2 id="photos-title">Photographs <span id="photo-count"></span></h2></div><div id="photos" class="photo-grid"></div></section>
+    <section id="photos-section" hidden aria-labelledby="photos-title"><div class="section-heading"><h2 id="photos-title">Media <span id="photo-count"></span></h2></div><div id="photos" class="photo-grid"></div></section>
     <div id="empty" hidden class="empty"><div class="empty-symbol" aria-hidden="true">▧</div><h2 id="empty-title">A quiet little corner.</h2><p id="empty-message">No photographs here yet.</p><button id="empty-action" class="button quiet" hidden>Clear filters</button></div>
     <nav class="pagination" id="pagination" hidden aria-label="Gallery pages"><button id="previous" class="button quiet">← Previous</button><span id="page-label"></span><button id="next" class="button quiet">Next →</button></nav>
     <footer><span class="read-only">Read-only library</span></footer>
   </main>
   <dialog id="viewer" aria-labelledby="viewer-title">
-    <div class="viewer-bar"><div><p id="viewer-position" class="small"></p><h2 id="viewer-title"></h2></div><div><button class="viewer-button" id="info-toggle" aria-label="Toggle image details" aria-expanded="false">ⓘ <span>Details</span></button><button class="viewer-button" id="viewer-close" aria-label="Close photo viewer">×</button></div></div>
-    <div class="viewer-body"><div id="image-stage" class="image-stage"><p id="viewer-loading" role="status">Loading preview…</p><img id="viewer-image" alt=""><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous photograph">‹</button><button id="viewer-next" class="viewer-arrow next" aria-label="Next photograph">›</button><div id="viewer-error" role="alert" hidden></div></div>
+    <div class="viewer-bar"><div><p id="viewer-position" class="small"></p><h2 id="viewer-title"></h2></div><div><button class="viewer-button" id="info-toggle" aria-label="Toggle image details" aria-expanded="false">ⓘ <span>Details</span></button><button class="viewer-button" id="viewer-close" aria-label="Close media viewer">×</button></div></div>
+    <div class="viewer-body"><div id="image-stage" class="image-stage"><p id="viewer-loading" role="status">Loading preview…</p><img id="viewer-image" alt=""><video id="viewer-video" controls playsinline preload="metadata" hidden aria-label="Video preview"></video><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous item">‹</button><button id="viewer-next" class="viewer-arrow next" aria-label="Next item">›</button><div id="viewer-error" role="alert" hidden></div></div>
     <aside id="details" hidden><p class="eyebrow">THE DETAILS</p><h3>Image details</h3><dl id="metadata"></dl><h4>Tags</h4><div id="viewer-tags" class="tags"></div><button id="open-folder" class="viewer-button">Open containing folder ↗</button></aside></div>
     <div class="viewer-footer"><span>← → to explore</span><span>Swipe to browse · Esc to close</span></div>
   </dialog>

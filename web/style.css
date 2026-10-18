@@ -1418,3 +1418,18 @@ footer {
   .heading-row .sort select { font-size:9px; max-width:95px; padding:6px 0; }
   #scan-panel { top:49px; }
 }
+
+/* Settings stay compact and scroll within small screens. */
+#scan-panel {position:fixed;max-height:calc(100dvh - 70px);overflow:auto;z-index:12}
+.settings-heading {font-size:12px;margin:18px 0 6px}
+#password-form {display:grid;gap:8px}
+#password-form label,.login-card label {font-size:12px;font-weight:600}
+#password-form input,.login-card input {width:100%;box-sizing:border-box;min-height:38px;border:1px solid var(--line);border-radius:7px;background:white;padding:8px 10px;font:inherit}
+.settings-actions {display:flex;gap:16px;margin-top:10px}
+.login-screen {position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg,#f6f5f0)}
+.login-card {width:min(360px,100%);display:grid;gap:14px;background:#fffef9;border:1px solid var(--line);border-radius:14px;padding:28px}
+.login-card h1 {font-size:24px;margin:0 0 8px}
+#login-error {color:#a93434;min-height:18px;font-size:13px}
+#viewer-video {max-width:100%;max-height:100%;width:100%;height:100%;padding:12px 60px;box-sizing:border-box;object-fit:contain}
+.media-badge {position:absolute;top:7px;left:7px;padding:3px 6px;border-radius:5px;color:white;background:#17231dbb;font-size:10px;font-weight:700;pointer-events:none}
+@media(max-width:600px){#viewer-video{padding:8px 30px}.login-card{padding:22px}}

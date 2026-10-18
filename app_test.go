@@ -489,7 +489,7 @@ func TestSourceContainmentAndHTTP(t *testing.T) {
 	ix := &Indexer{store: s, config: c}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() { cancel(); ix.wg.Wait() }()
-	app := &App{s, ix, cache, ctx}
+	app := &App{store: s, indexer: ix, cache: cache, ctx: ctx}
 	handler := app.handler()
 	for _, tc := range []struct {
 		method, path string

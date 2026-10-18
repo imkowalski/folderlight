@@ -25,6 +25,10 @@ type cacheEntry struct {
 	name string
 	size int64
 }
+type cacheFailure struct {
+	err error
+	at  time.Time
+}
 type imageJob struct {
 	key      string
 	p        Photo
@@ -34,23 +38,24 @@ type imageJob struct {
 	contexts []context.Context
 }
 type ImageCache struct {
-	cfg     Config
-	dir     string
-	mu      sync.Mutex
-	entries map[string]*list.Element
-	lru     *list.List
-	bytes   int64
-	pending map[string]*imageJob
-	high    chan *imageJob
-	low     chan *imageJob
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	cfg      Config
+	dir      string
+	mu       sync.Mutex
+	entries  map[string]*list.Element
+	lru      *list.List
+	bytes    int64
+	pending  map[string]*imageJob
+	failures map[string]cacheFailure
+	high     chan *imageJob
+	low      chan *imageJob
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 }
 
 func newCache(ctx context.Context, cfg Config) (*ImageCache, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	c := &ImageCache{cfg: cfg, dir: filepath.Join(cfg.State, "cache"), entries: map[string]*list.Element{}, lru: list.New(), pending: map[string]*imageJob{}, high: make(chan *imageJob, 16), low: make(chan *imageJob, 64), ctx: ctx, cancel: cancel}
+	c := &ImageCache{cfg: cfg, dir: filepath.Join(cfg.State, "cache"), entries: map[string]*list.Element{}, lru: list.New(), pending: map[string]*imageJob{}, failures: map[string]cacheFailure{}, high: make(chan *imageJob, 16), low: make(chan *imageJob, 64), ctx: ctx, cancel: cancel}
 	if err := os.MkdirAll(c.dir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -68,6 +73,9 @@ func newCache(ctx context.Context, cfg Config) (*ImageCache, error) {
 	var saved []disk
 	for _, f := range files {
 		if f.IsDir() {
+			if filepath.Ext(f.Name()) == ".tmp" {
+				os.RemoveAll(filepath.Join(c.dir, f.Name()))
+			}
 			continue
 		}
 		if filepath.Ext(f.Name()) == ".tmp" {
@@ -77,7 +85,7 @@ func newCache(ctx context.Context, cfg Config) (*ImageCache, error) {
 			}
 			continue
 		}
-		if len(f.Name()) != 68 || filepath.Ext(f.Name()) != ".jpg" {
+		if len(f.Name()) != 68 || (filepath.Ext(f.Name()) != ".jpg" && filepath.Ext(f.Name()) != ".mp4") {
 			continue
 		}
 		info, e := f.Info()
@@ -120,8 +128,12 @@ func (c *ImageCache) evict(incoming int64) error {
 	return nil
 }
 func cacheKey(p Photo, size int) string {
-	h := sha256.Sum256(fmt.Appendf(nil, "v1:%s:%d:%d:%d:%d", p.Path, p.Size, p.Mtime, p.Orientation, size))
-	return hex.EncodeToString(h[:]) + ".jpg"
+	h := sha256.Sum256(fmt.Appendf(nil, "v2:%s:%d:%d:%d:%d", p.Path, p.Size, p.Mtime, p.Orientation, size))
+	ext := ".jpg"
+	if size == 0 {
+		ext = ".mp4"
+	}
+	return hex.EncodeToString(h[:]) + ext
 }
 func (c *ImageCache) open(key string) (*os.File, error) {
 	c.mu.Lock()
@@ -144,12 +156,19 @@ func (c *ImageCache) get(ctx context.Context, p Photo, size int) (*os.File, erro
 			return f, nil
 		}
 		c.mu.Lock()
+		if failure, ok := c.failures[key]; ok {
+			if time.Since(failure.at) < 30*time.Second {
+				c.mu.Unlock()
+				return nil, failure.err
+			}
+			delete(c.failures, key)
+		}
 		job := c.pending[key]
 		if job == nil {
 			job = &imageJob{key: key, p: p, size: size, done: make(chan struct{})}
 			c.pending[key] = job
 			queue := c.low
-			if size > 480 {
+			if size > 480 || size == 0 {
 				queue = c.high
 			}
 			select {
@@ -208,6 +227,12 @@ func (c *ImageCache) worker() {
 		}
 		c.mu.Lock()
 		job.err = err
+		if err != nil && !errors.Is(err, context.Canceled) {
+			if len(c.failures) > 256 {
+				clear(c.failures)
+			}
+			c.failures[job.key] = cacheFailure{err, time.Now()}
+		}
 		delete(c.pending, job.key)
 		close(job.done)
 		c.mu.Unlock()
@@ -236,6 +261,19 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 	if info.Size() != job.p.Size || info.ModTime().UnixNano() != job.p.Mtime {
 		return errors.New("image changed; rescan the library")
 	}
+	if job.size == 0 {
+		return c.generateVideo(f, job)
+	}
+	orientation := job.p.Orientation
+	if mediaKind(job.p.Name) != "image" {
+		converted, cleanup, err := c.convertedSource(f, job.p, job.size)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		f = converted
+		orientation = 1
+	}
 	config, _, err := image.DecodeConfig(f)
 	if err != nil {
 		return err
@@ -250,7 +288,7 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 	if err != nil {
 		return err
 	}
-	oriented := orientedImage{src: src, orientation: job.p.Orientation}
+	oriented := orientedImage{src: src, orientation: orientation}
 	bounds := oriented.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 	if max(w, h) > job.size {
@@ -277,17 +315,7 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err = c.evict(info.Size()); err != nil {
-		return err
-	}
-	if err = os.Rename(tmp.Name(), filepath.Join(c.dir, job.key)); err != nil {
-		return err
-	}
-	c.entries[job.key] = c.lru.PushFront(cacheEntry{job.key, info.Size()})
-	c.bytes += info.Size()
-	return nil
+	return c.commitCache(tmp.Name(), job.key, info.Size())
 }
 
 // Present a transformed view without allocating a second full-size image.

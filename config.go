@@ -19,7 +19,7 @@ type Config struct {
 	MaxPixels  int64  `json:"max_pixels"`
 }
 
-func loadConfig(filename string) (Config, error) {
+func loadConfig(filename string, recovery ...bool) (Config, error) {
 	c := Config{Listen: "127.0.0.1:8080", CacheBytes: 5 << 30, Workers: 1, MaxPixels: 40_000_000}
 	f, err := os.Open(filename)
 	if err != nil {
@@ -48,12 +48,17 @@ func loadConfig(filename string) (Config, error) {
 	if !filepath.IsAbs(c.State) {
 		c.State = filepath.Join(base, c.State)
 	}
-	c.Library, err = filepath.EvalSymlinks(c.Library)
+	reset := len(recovery) > 0 && recovery[0]
+	if reset {
+		c.Library, err = resolvePlannedPath(c.Library)
+	} else {
+		c.Library, err = filepath.EvalSymlinks(c.Library)
+	}
 	if err != nil {
 		return c, fmt.Errorf("library: %w", err)
 	}
 	info, err := os.Stat(c.Library)
-	if err != nil || !info.IsDir() {
+	if !reset && (err != nil || !info.IsDir()) {
 		return c, errors.New("library must be an existing directory")
 	}
 	if c.Workers < 1 || c.Workers > 8 || c.CacheBytes < 1<<20 || c.MaxPixels < 1 || c.MaxPixels > 200_000_000 || c.Listen == "" {

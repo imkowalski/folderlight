@@ -38,6 +38,7 @@ func natural(s string) string {
 
 type Store struct{ db *sql.DB }
 type Photo struct {
+	Kind        string   `json:"kind"`
 	ID          int64    `json:"id"`
 	Path        string   `json:"path"`
 	Folder      string   `json:"folder"`
@@ -116,6 +117,7 @@ func readPhoto(row scanner) (p Photo, err error) {
 	if err == nil {
 		err = json.Unmarshal([]byte(tags), &p.Tags)
 	}
+	p.Kind = mediaKind(p.Name)
 	return
 }
 func (s *Store) photo(ctx context.Context, id int64) (Photo, error) {

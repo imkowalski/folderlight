@@ -190,7 +190,11 @@ func (s *Indexer) walk(ctx context.Context, root *os.Root, folder string, force 
 				continue
 			}
 			p := Photo{Path: relative, Folder: folder, Name: entry.Name(), Size: info.Size(), Mtime: info.ModTime().UnixNano(), Taken: info.ModTime().Unix(), Orientation: 1, Tags: []string{}}
-			readMetadata(imageFile, &p)
+			if mediaKind(p.Name) == "image" {
+				readMetadata(imageFile, &p)
+			} else {
+				readExtendedMetadata(ctx, imageFile, &p, s.config.State)
+			}
 			imageFile.Close()
 			if err = s.store.put(ctx, p); err != nil {
 				return err

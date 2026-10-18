@@ -1,6 +1,14 @@
 # Verification
 
-Verified on 18 October 2026 with Go 1.27.2 on Linux x86-64, AMD Ryzen 5 5500U (6 cores / 12 logical CPUs). Results are development-machine measurements, not guarantees for an undecided Alpine server.
+Verified on 18–19 October 2026 with Go 1.27.2 on Linux x86-64, AMD Ryzen 5 5500U (6 cores / 12 logical CPUs). Results are development-machine measurements, not guarantees for an undecided Alpine server.
+
+## Version 1.2: gallery password, version settings, and optional media
+
+Settings now displays the executable version, scan controls, optional gallery password controls, and installed decoder status. Password tests cover salted hashing, incorrect passwords, session tampering/expiry, login throttling, changing/removing protection, previous-session invalidation, cross-origin/missing-header mutation rejection, and protection of browsing/search/tags/details/images/video/scan endpoints. Recovery configuration works without an available library root. Command-line reset was exercised against the running disposable demo; the next browser reload opened the gallery without a login.
+
+Built a static test executable and ran the opt-in media integration test inside Alpine 3.24.2 with FFmpeg 8.1.2, libheif 1.23.4, LibRaw 0.22.1, and ExifTool 13.55 installed from Alpine repositories. A separate user/mount/process namespace provided `/proc` for verified descriptor input. Synthetic DNG, HEIC, MP4 (with audio), and WebM sources were indexed and their JPEG thumbnails generated. Windows XPKeywords and XMP Unicode tags in DNG/HEIC were decoded and deduplicated. Both video containers were converted to seekable MP4, and preview delivery returned correct HTTP 206 range responses. File bytes and directory entries were checked after conversion to confirm sources were unchanged. The browser demo used a read-only bind mount of its synthetic source library. GitHub Actions also runs these decoder integration tests inside Alpine before publishing releases.
+
+Browser checks verified Settings/version/tool status at desktop and 390 × 844, the whole-gallery login screen, signing in to the selected folder, signing out, and CLI recovery. The video element loaded a four-second 640 × 480 MP4 with `readyState=4` and no codec error. The preview screen showed native video controls. Physical-device touch gestures, a full Proxmox/OpenRC boot, and real camera-model/codec collections were not tested. Camera RAW/HEIC/video support depends on the installed tool versions; the included DNG is a generated Bayer test fixture, not a representative camera corpus. Large-library performance has not been re-benchmarked for this version, and the measurements below remain the 1.0 baseline.
 
 ## Version 1.1.1: public releases and Alpine updates
 
