@@ -96,9 +96,9 @@ These optional packages have their own dependencies and increase disk/memory use
 | HEIC/HEIF/HIF | Primary still image through `heif-thumbnailer` from libheif, plus `exiftool`. Installed codec plugins must support the source encoding. |
 | Video | MP4/MOV/M4V/3GP, MKV/WebM, AVI, MTS/M2TS, MPEG, WMV, OGV; `ffmpeg` and `ffprobe`. Codec support depends on the installed FFmpeg build. |
 
-RAW/HEIC tags are read from embedded XPKeywords, Keywords, and XMP Subject through ExifTool. Video tags are read from equivalent embedded fields when the container exposes them. Unsupported/missing metadata remains searchable by filename. Sidecars are not read. RAW previews use LibRaw's half-size development with camera white balance; they are previews rather than a color-managed RAW editor.
+RAW/HEIC tags are read from embedded XPKeywords, Keywords, and XMP Subject through ExifTool. Video tags are read from equivalent embedded fields when the container exposes them. Unsupported/missing metadata remains searchable by filename. Sidecars are not read. RAW previews first use a sufficiently large embedded camera JPEG, including its orientation. Missing, small, or damaged embedded previews fall back to LibRaw's half-size development with camera white balance. They are previews rather than a color-managed RAW editor.
 
-Video cards show a static thumbnail. Open a video to prepare a cached H.264/AAC MP4 preview, with native controls, audio, and seeking. Output fits within 1280 pixels without upscaling. The first playback requires transcoding and can take several minutes; subsequent playback uses the cache. Video previews share the configured cache limit and bounded worker queue with images. Each video preview is capped at the smaller of 512 MiB and `cache_bytes`, with a ten-minute conversion timeout. Oversized, truncated, unsupported, or failed previews show an error. This is not a full media streaming/transcoding server.
+Video cards show a static thumbnail. Open a video to prepare a cached H.264/AAC MP4 preview, with native controls, audio, and seeking. Output fits within 1280 pixels without upscaling. The first playback requires transcoding and can take several minutes; subsequent playback uses the cache. Video previews share the configured cache limit with images. By default one dedicated, lower-priority video worker keeps long transcodes out of the image queue; set `video_workers` to `0` to share the image pool on memory-constrained containers. Each video preview is capped at the smaller of 512 MiB and `cache_bytes`, with a ten-minute conversion timeout. Oversized, truncated, unsupported, or failed previews show an error. This is not a full media streaming/transcoding server.
 
 Helpers receive verified read-only file descriptors, not library filenames or shell commands. Temporary and generated files stay in the state directory. Video inputs use fixed container demuxers and disable network protocols. `max_pixels` is checked before image/video conversion where dimensions are available, and again before Go image decoding. External decoders have their own memory use; the Go memory target is not a cap on helper processes. Keep media packages updated through Alpine.
 
@@ -123,13 +123,13 @@ install -m 0755 /tmp/folderlight-update /usr/local/bin/folderlight-update
 Update to the latest published release:
 
 ```sh
-folderlight-update
-folderlight -version
+/usr/local/bin/folderlight-update
+/usr/local/bin/folderlight -version
 rc-service folderlight status
 tail -n 30 /var/log/folderlight.log
 ```
 
-Or install a particular published release with `folderlight-update v1.1.1`. The updater selects amd64 or arm64, downloads the release archive and its SHA-256 manifest, checks the archive, verifies the executable can run, saves the previous executable as `/usr/local/bin/folderlight.previous`, and replaces the binary. It stops/restarts the service only if it was already running. Download or checksum failures occur before stopping the service. SHA-256 detects corruption; the release and checksum both rely on trust in this GitHub repository and HTTPS.
+Or install a particular published release with `/usr/local/bin/folderlight-update v1.3.0`. Using the full path also works when `/usr/local/bin` is absent from your shell’s `PATH`. The updater selects amd64 or arm64, downloads the release archive and its SHA-256 manifest, checks the archive, verifies the executable can run, saves the previous executable as `/usr/local/bin/folderlight.previous`, and replaces the binary. It stops/restarts the service only if it was already running. Download or checksum failures occur before stopping the service. SHA-256 detects corruption; the release and checksum both rely on trust in this GitHub repository and HTTPS.
 
 The updater changes only `/usr/local/bin/folderlight` and its previous-binary copy. It does not overwrite your config, OpenRC service, updater script, state directory, or NAS mount. Normal application startup can migrate the index when a new version requires it. Read release notes before upgrading, and back up configuration/state with the app stopped before a major upgrade or planned downgrade. A previous executable alone cannot undo database migrations.
 
@@ -148,11 +148,20 @@ Paths may be absolute or relative to the configuration file. Unknown keys are re
 | `listen` | `127.0.0.1:8080` | HTTP listening address |
 | `cache_bytes` | `5368709120` | 5 GiB maximum for cached thumbnails and previews |
 | `workers` | `1` | Concurrent image renderers, from 1 to 8 |
+| `video_workers` | `1` | One separate video transcoder; `0` shares the image worker pool |
 | `max_pixels` | `40000000` | Maximum source image pixel count decoded for a preview |
 
 The cache limit excludes the SQLite database and its WAL. Old cache entries are evicted using recency of access. A growing state directory is expected as the index is built. Do not share a state directory between running instances. Back it up only with the app stopped, or use a SQLite-aware backup tool; copying just `library.sqlite` while it runs can miss WAL data. The index and cache are completely rebuildable. The SQLite tag catalog caches unique tags and counts; it is backfilled once when upgrading an existing index and maintained transactionally on tag changes/deletions. No extra metadata scan is needed for the upgrade. The browser caches up to 32 autocomplete responses for 30 seconds and invalidates them during/after scans.
 
-The app sets a soft Go memory target of 256 MiB unless `GOMEMLIMIT` is supplied. This is **not** a hard process memory limit. Decoding a single large photo can temporarily exceed it. On a small server, retain one worker and lower `max_pixels`, for example to `12000000`. Raising workers raises peak memory use. Images above the limit remain indexed and searchable but show a preview error. Metadata packets are limited separately.
+The app sets a soft Go memory target of 256 MiB unless `GOMEMLIMIT` is supplied. This is **not** a hard process memory limit. Decoding a single large photo can temporarily exceed it. On a small server, retain one worker and lower `max_pixels`, for example to `12000000`. Raising workers raises peak memory use. The default dedicated video worker can run one external transcode alongside image rendering; use `"video_workers": 0` if the container cannot accommodate both. Images above the limit remain indexed and searchable but show a preview error. Metadata packets are limited separately.
+
+## Preview and viewing performance
+
+The viewer shows a thumbnail immediately, replaces it with the detailed preview, and prepares only the next still image on the current results page. That speculative work runs at low priority behind visible images; it is cancelled when navigating away. Videos are prepared only when opened. The grid retains unchanged image cards during scan refreshes and sorting, and loads the first visible cards eagerly while lazy-loading the rest.
+
+New thumbnails reuse a cached 1600-pixel preview when available, avoiding another read from the NAS and another full-size decode. Rendering reduces large photos before the final filter and applies rotation to the small result. Existing disk previews remain valid after updating; no cache deletion, forced scan, or config edit is required. Embedded web assets are gzip-compressed and use ETags to reduce repeat transfers. Media requests still check gallery authentication.
+
+On the development machine, a synthetic 12-megapixel JPEG rendered about 6× faster as a thumbnail and 4× faster as a viewer preview than version 1.2. This measures decoding, resizing, orientation, and encoding; NAS/network speed and video transcoding were excluded. See `VERIFICATION.md` for the commands and allocation measurements.
 
 ## Browsing and search
 
@@ -195,7 +204,7 @@ If you intentionally replace or relocate the library root, stop the app and conf
 | `GET /api/browse` or `/api/search` | `folder`, `q`, `scope=tree\|folder\|all`, `sort=name\|date`, `tag`, `page`, `limit` (1–120); paginated folders/photos and counts |
 | `GET /api/tags` | `prefix`, `folder`, `scope=tree\|folder\|all`, `limit` (1–20); cached/scoped tag suggestions with image counts |
 | `GET /api/photo` | `id`; filename, relative folder/path, dimensions, dates, tags, warning |
-| `GET /api/image` | `id`, `size=thumb\|preview`; cached JPEG, private ETag |
+| `GET /api/image` | `id`, `size=thumb\|preview`; cached JPEG, private ETag; optional `priority=background` for speculative previews |
 | `GET /api/status` | Current/last scan progress, counters, and most recent warning |
 | `GET /api/settings` | Version, password-enabled/authenticated flags, media-tool status when authenticated |
 | `POST /api/login` | JSON `{"password":"…"}`; sets the session cookie |
@@ -217,7 +226,7 @@ go mod download
 CGO_ENABLED=0 go test ./...
 go vet ./...
 # Optional UI helper tests on the development machine (Node.js only):
-node --test scripts/search-ui.test.cjs
+node --test scripts/*.test.cjs
 sh scripts/build.sh
 ```
 

@@ -23,7 +23,7 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: node --check web/app.js
-      - run: node --test scripts/search-ui.test.cjs
+      - run: node --test scripts/*.test.cjs
       - run: |
           for script in scripts/build.sh scripts/update.sh deploy/folderlight.openrc; do
             sh -n "$script"

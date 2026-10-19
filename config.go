@@ -11,16 +11,17 @@ import (
 )
 
 type Config struct {
-	Library    string `json:"library"`
-	State      string `json:"state"`
-	Listen     string `json:"listen"`
-	CacheBytes int64  `json:"cache_bytes"`
-	Workers    int    `json:"workers"`
-	MaxPixels  int64  `json:"max_pixels"`
+	Library      string `json:"library"`
+	State        string `json:"state"`
+	Listen       string `json:"listen"`
+	CacheBytes   int64  `json:"cache_bytes"`
+	Workers      int    `json:"workers"`
+	VideoWorkers int    `json:"video_workers"`
+	MaxPixels    int64  `json:"max_pixels"`
 }
 
 func loadConfig(filename string, recovery ...bool) (Config, error) {
-	c := Config{Listen: "127.0.0.1:8080", CacheBytes: 5 << 30, Workers: 1, MaxPixels: 40_000_000}
+	c := Config{Listen: "127.0.0.1:8080", CacheBytes: 5 << 30, Workers: 1, VideoWorkers: 1, MaxPixels: 40_000_000}
 	f, err := os.Open(filename)
 	if err != nil {
 		return c, err
@@ -61,8 +62,8 @@ func loadConfig(filename string, recovery ...bool) (Config, error) {
 	if !reset && (err != nil || !info.IsDir()) {
 		return c, errors.New("library must be an existing directory")
 	}
-	if c.Workers < 1 || c.Workers > 8 || c.CacheBytes < 1<<20 || c.MaxPixels < 1 || c.MaxPixels > 200_000_000 || c.Listen == "" {
-		return c, errors.New("invalid limits: workers 1–8, cache >= 1 MiB, max_pixels 1–200 million, listen required")
+	if c.Workers < 1 || c.Workers > 8 || c.VideoWorkers < 0 || c.VideoWorkers > 1 || c.CacheBytes < 1<<20 || c.MaxPixels < 1 || c.MaxPixels > 200_000_000 || c.Listen == "" {
+		return c, errors.New("invalid limits: workers 1–8, video_workers 0–1, cache >= 1 MiB, max_pixels 1–200 million, listen required")
 	}
 	c.State, err = resolvePlannedPath(c.State)
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -79,9 +78,7 @@ func (a *App) handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
-	web, _ := fs.Sub(assets, "web")
-	files := http.FileServer(http.FS(web))
-	mux.Handle("GET /", files)
+	mux.Handle("GET /", staticAssets())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -219,7 +216,7 @@ func (a *App) image(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "size must be thumb or preview")
 		return
 	}
-	f, err := a.cache.get(r.Context(), p, size)
+	f, err := a.cache.getPriority(r.Context(), p, size, r.URL.Query().Get("priority") == "background")
 	if err != nil {
 		status := 422
 		if errors.Is(err, errQueueFull) {

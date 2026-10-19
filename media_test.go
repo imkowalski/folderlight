@@ -18,6 +18,9 @@ import (
 //go:embed testdata/synthetic.dng
 var syntheticDNG []byte
 
+//go:embed testdata/synthetic-preview.dng
+var syntheticPreviewDNG []byte
+
 func TestExtendedMetadataAndKinds(t *testing.T) {
 	p := Photo{Taken: 1, Tags: []string{}}
 	err := applyExtendedMetadata([]byte(`[{"ImageWidth":128,"ImageHeight":96,"XPKeywords":" Ærø; Sommer; ÆRØ ","Subject":["Łódź","Sommer"],"Keywords":["Family holiday"],"DateTimeOriginal":"1700000000"}]`), &p)
@@ -66,10 +69,11 @@ func TestRealMediaDecoders(t *testing.T) {
 	}
 	writeImage(t, cfg, "still.jpg", baseJPEG())
 	writeImage(t, cfg, "sensor.dng", syntheticDNG)
+	writeImage(t, cfg, "embedded.dng", syntheticPreviewDNG)
 	run("heif-enc", "-q", "50", "-o", filepath.Join(cfg.Library, "phone.heic"), filepath.Join(cfg.Library, "still.jpg"))
 	run("ffmpeg", "-v", "error", "-threads", "1", "-filter_threads", "1", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-t", "2", "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", "-c:a", "aac", filepath.Join(cfg.Library, "clip.mp4"))
 	run("ffmpeg", "-v", "error", "-threads", "1", "-filter_threads", "1", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-t", "1", "-c:v", "libvpx-vp9", "-threads", "1", filepath.Join(cfg.Library, "web.webm"))
-	for _, name := range []string{"sensor.dng", "phone.heic", "clip.mp4"} {
+	for _, name := range []string{"sensor.dng", "embedded.dng", "phone.heic", "clip.mp4"} {
 		run("exiftool", "-overwrite_original", "-XMP-dc:Subject=Ærø", "-XMP-dc:Subject+=Łódź", filepath.Join(cfg.Library, name))
 		if name != "clip.mp4" {
 			run("exiftool", "-overwrite_original", "-XPKeywords=Ærø; Sommer", filepath.Join(cfg.Library, name))
@@ -90,11 +94,22 @@ func TestRealMediaDecoders(t *testing.T) {
 	}
 	defer cache.close()
 	list, err := store.list(ctx, Query{Scope: "all", Page: 1, Limit: 60})
-	if err != nil || list.Total != 5 {
+	if err != nil || list.Total != 6 {
 		t.Fatal(list, err)
 	}
 	for _, p := range list.Photos {
 		t.Run(p.Name, func(t *testing.T) {
+			if p.Name == "embedded.dng" {
+				f, err := os.Open(filepath.Join(cfg.Library, p.Name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				name, flip := rawEmbeddedPreview(ctx, f, p, 480, t.TempDir(), cfg.MaxPixels)
+				if name == "" || flip != 6 {
+					t.Fatal("real ExifTool embedded JPEG extraction/orientation", name, flip)
+				}
+			}
 			expected := []string{"Ærø", "Łódź"}
 			if p.Kind == "raw" || p.Kind == "heic" {
 				expected = []string{"Ærø", "Sommer", "Łódź"}
@@ -110,6 +125,9 @@ func TestRealMediaDecoders(t *testing.T) {
 			f.Close()
 			if err != nil || decoded.Width < 1 || decoded.Height < 1 || decoded.Width > 480 || decoded.Height > 480 {
 				t.Fatal(decoded, err)
+			}
+			if p.Name == "embedded.dng" && (decoded.Width != 96 || decoded.Height != 128) {
+				t.Fatal("embedded RAW rotation", decoded)
 			}
 			if p.Kind == "video" {
 				f, err := cache.get(ctx, p, 0)

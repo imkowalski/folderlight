@@ -15,47 +15,50 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"golang.org/x/image/draw"
 )
 
 var errQueueFull = errors.New("image queue is full; try again shortly")
 
 type cacheEntry struct {
-	name string
-	size int64
+	name    string
+	size    int64
+	touched time.Time
 }
 type cacheFailure struct {
 	err error
 	at  time.Time
 }
 type imageJob struct {
-	key      string
-	p        Photo
-	size     int
-	done     chan struct{}
-	err      error
-	contexts []context.Context
+	key        string
+	p          Photo
+	size       int
+	done       chan struct{}
+	err        error
+	contexts   []context.Context
+	started    bool
+	background bool
 }
 type ImageCache struct {
-	cfg      Config
-	dir      string
-	mu       sync.Mutex
-	entries  map[string]*list.Element
-	lru      *list.List
-	bytes    int64
-	pending  map[string]*imageJob
-	failures map[string]cacheFailure
-	high     chan *imageJob
-	low      chan *imageJob
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	cfg        Config
+	dir        string
+	mu         sync.Mutex
+	entries    map[string]*list.Element
+	lru        *list.List
+	bytes      int64
+	pending    map[string]*imageJob
+	failures   map[string]cacheFailure
+	high       chan *imageJob
+	low        chan *imageJob
+	video      chan *imageJob
+	background chan *imageJob
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 func newCache(ctx context.Context, cfg Config) (*ImageCache, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	c := &ImageCache{cfg: cfg, dir: filepath.Join(cfg.State, "cache"), entries: map[string]*list.Element{}, lru: list.New(), pending: map[string]*imageJob{}, failures: map[string]cacheFailure{}, high: make(chan *imageJob, 16), low: make(chan *imageJob, 64), ctx: ctx, cancel: cancel}
+	c := &ImageCache{cfg: cfg, dir: filepath.Join(cfg.State, "cache"), entries: map[string]*list.Element{}, lru: list.New(), pending: map[string]*imageJob{}, failures: map[string]cacheFailure{}, high: make(chan *imageJob, 16), low: make(chan *imageJob, 64), video: make(chan *imageJob, 8), background: make(chan *imageJob, 16), ctx: ctx, cancel: cancel}
 	if err := os.MkdirAll(c.dir, 0700); err != nil {
 		cancel()
 		return nil, err
@@ -97,7 +100,7 @@ func newCache(ctx context.Context, cfg Config) (*ImageCache, error) {
 	}
 	sort.Slice(saved, func(i, j int) bool { return saved[i].modified.Before(saved[j].modified) })
 	for _, f := range saved {
-		c.entries[f.name] = c.lru.PushFront(cacheEntry{f.name, f.size})
+		c.entries[f.name] = c.lru.PushFront(cacheEntry{name: f.name, size: f.size, touched: f.modified})
 		c.bytes += f.size
 	}
 	if err = c.evict(0); err != nil {
@@ -107,6 +110,10 @@ func newCache(ctx context.Context, cfg Config) (*ImageCache, error) {
 	for range cfg.Workers {
 		c.wg.Add(1)
 		go c.worker()
+	}
+	for range cfg.VideoWorkers {
+		c.wg.Add(1)
+		go c.videoWorker()
 	}
 	return c, nil
 }
@@ -137,19 +144,32 @@ func cacheKey(p Photo, size int) string {
 }
 func (c *ImageCache) open(key string) (*os.File, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	f, err := os.Open(filepath.Join(c.dir, key))
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
+	touch := false
 	if el := c.entries[key]; el != nil {
 		c.lru.MoveToFront(el)
+		entry := el.Value.(cacheEntry)
+		if time.Since(entry.touched) >= time.Minute {
+			touch = true
+			entry.touched = time.Now()
+			el.Value = entry
+		}
+	}
+	c.mu.Unlock()
+	if touch {
 		now := time.Now()
 		_ = os.Chtimes(filepath.Join(c.dir, key), now, now)
 	}
 	return f, nil
 }
 func (c *ImageCache) get(ctx context.Context, p Photo, size int) (*os.File, error) {
+	return c.getPriority(ctx, p, size, false)
+}
+func (c *ImageCache) getPriority(ctx context.Context, p Photo, size int, background bool) (*os.File, error) {
 	key := cacheKey(p, size)
 	for range 2 {
 		if f, err := c.open(key); err == nil {
@@ -165,11 +185,17 @@ func (c *ImageCache) get(ctx context.Context, p Photo, size int) (*os.File, erro
 		}
 		job := c.pending[key]
 		if job == nil {
-			job = &imageJob{key: key, p: p, size: size, done: make(chan struct{})}
+			job = &imageJob{key: key, p: p, size: size, done: make(chan struct{}), background: background}
 			c.pending[key] = job
 			queue := c.low
 			if size > 480 || size == 0 {
 				queue = c.high
+			}
+			if size == 0 && c.cfg.VideoWorkers > 0 {
+				queue = c.video
+			}
+			if background && size != 0 {
+				queue = c.background
 			}
 			select {
 			case queue <- job:
@@ -177,6 +203,17 @@ func (c *ImageCache) get(ctx context.Context, p Photo, size int) (*os.File, erro
 				delete(c.pending, key)
 				c.mu.Unlock()
 				return nil, errQueueFull
+			}
+		}
+		if !background && job.background && !job.started {
+			queue := c.high
+			if size <= 480 && size != 0 {
+				queue = c.low
+			}
+			select {
+			case queue <- job:
+				job.background = false
+			default:
 			}
 		}
 		job.contexts = append(job.contexts, ctx)
@@ -188,6 +225,9 @@ func (c *ImageCache) get(ctx context.Context, p Photo, size int) (*os.File, erro
 			return nil, c.ctx.Err()
 		case <-job.done:
 			if job.err != nil {
+				if errors.Is(job.err, context.Canceled) && ctx.Err() == nil && c.ctx.Err() == nil {
+					continue
+				}
 				return nil, job.err
 			}
 		}
@@ -204,39 +244,63 @@ func (c *ImageCache) worker() {
 		case job = <-c.high:
 		default:
 			select {
-			case <-c.ctx.Done():
-				return
-			case job = <-c.high:
 			case job = <-c.low:
+			default:
+				select {
+				case <-c.ctx.Done():
+					return
+				case job = <-c.high:
+				case job = <-c.low:
+				case job = <-c.background:
+				}
 			}
 		}
-		c.mu.Lock()
-		active := false
-		for _, ctx := range job.contexts {
-			if ctx.Err() == nil {
-				active = true
-				break
-			}
-		}
-		c.mu.Unlock()
-		var err error
-		if !active {
-			err = context.Canceled
-		} else {
-			err = c.generate(job)
-		}
-		c.mu.Lock()
-		job.err = err
-		if err != nil && !errors.Is(err, context.Canceled) {
-			if len(c.failures) > 256 {
-				clear(c.failures)
-			}
-			c.failures[job.key] = cacheFailure{err, time.Now()}
-		}
-		delete(c.pending, job.key)
-		close(job.done)
-		c.mu.Unlock()
+		c.processJob(job)
 	}
+}
+func (c *ImageCache) videoWorker() {
+	defer c.wg.Done()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case job := <-c.video:
+			c.processJob(job)
+		}
+	}
+}
+func (c *ImageCache) processJob(job *imageJob) {
+	c.mu.Lock()
+	if job.started {
+		c.mu.Unlock()
+		return
+	}
+	job.started = true
+	active := false
+	for _, ctx := range job.contexts {
+		if ctx.Err() == nil {
+			active = true
+			break
+		}
+	}
+	c.mu.Unlock()
+	var err error
+	if !active {
+		err = context.Canceled
+	} else {
+		err = c.generate(job)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	job.err = err
+	if err != nil && !errors.Is(err, context.Canceled) {
+		if len(c.failures) > 256 {
+			clear(c.failures)
+		}
+		c.failures[job.key] = cacheFailure{err, time.Now()}
+	}
+	delete(c.pending, job.key)
+	close(job.done)
 }
 func (c *ImageCache) generate(job *imageJob) (err error) {
 	defer func() {
@@ -244,6 +308,15 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 			err = fmt.Errorf("image decode failed: %v", r)
 		}
 	}()
+	if job.size > 0 && job.size < 1600 {
+		if preview, openErr := c.open(cacheKey(job.p, 1600)); openErr == nil {
+			src, decodeErr := decodeRaster(preview, c.cfg.MaxPixels)
+			preview.Close()
+			if decodeErr == nil {
+				return c.saveStill(renderPreview(src, 1, job.size), job.key)
+			}
+		}
+	}
 	root, err := os.OpenRoot(c.cfg.Library)
 	if err != nil {
 		return err
@@ -266,39 +339,35 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 	}
 	orientation := job.p.Orientation
 	if mediaKind(job.p.Name) != "image" {
-		converted, cleanup, err := c.convertedSource(f, job.p, job.size)
+		converted, convertedOrientation, cleanup, err := c.convertedSource(f, job.p, job.size)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 		f = converted
-		orientation = 1
+		orientation = convertedOrientation
 	}
+	src, err := decodeRaster(f, c.cfg.MaxPixels)
+	if err != nil {
+		return err
+	}
+	return c.saveStill(renderPreview(src, orientation, job.size), job.key)
+}
+func decodeRaster(f *os.File, maxPixels int64) (image.Image, error) {
 	config, _, err := image.DecodeConfig(f)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if config.Width < 1 || config.Height < 1 || int64(config.Width) > c.cfg.MaxPixels/int64(config.Height) {
-		return errors.New("image exceeds configured max_pixels")
+	if !withinPixelLimit(config.Width, config.Height, maxPixels) {
+		return nil, errors.New("image exceeds configured max_pixels")
 	}
 	if _, err = f.Seek(0, 0); err != nil {
-		return err
+		return nil, err
 	}
 	src, _, err := image.Decode(f)
-	if err != nil {
-		return err
-	}
-	oriented := orientedImage{src: src, orientation: orientation}
-	bounds := oriented.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	if max(w, h) > job.size {
-		ratio := float64(job.size) / float64(max(w, h))
-		w = max(1, int(float64(w)*ratio))
-		h = max(1, int(float64(h)*ratio))
-	}
-	output := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(output, output.Bounds(), &image.Uniform{color.RGBA{245, 245, 245, 255}}, image.Point{}, draw.Src)
-	draw.CatmullRom.Scale(output, output.Bounds(), oriented, bounds, draw.Over, nil)
+	return src, err
+}
+func (c *ImageCache) saveStill(output image.Image, key string) error {
 	tmp, err := os.CreateTemp(c.dir, "render-*.tmp")
 	if err != nil {
 		return err
@@ -308,14 +377,14 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 		tmp.Close()
 		return err
 	}
-	info, err = tmp.Stat()
+	info, err := tmp.Stat()
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return err
 	}
-	return c.commitCache(tmp.Name(), job.key, info.Size())
+	return c.commitCache(tmp.Name(), key, info.Size())
 }
 
 // Present a transformed view without allocating a second full-size image.

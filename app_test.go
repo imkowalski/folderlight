@@ -540,7 +540,7 @@ func TestConfigValidation(t *testing.T) {
 		name   string
 		change func(*Config)
 		valid  bool
-	}{{"valid", func(*Config) {}, true}, {"inside library", func(c *Config) { c.State = filepath.Join(c.Library, "state") }, false}, {"overlap parent", func(c *Config) { c.State = filepath.Dir(c.Library) }, false}, {"zero workers", func(c *Config) { c.Workers = 0 }, false}, {"huge pixel limit", func(c *Config) { c.MaxPixels = 300_000_000 }, false}} {
+	}{{"valid", func(*Config) {}, true}, {"inside library", func(c *Config) { c.State = filepath.Join(c.Library, "state") }, false}, {"overlap parent", func(c *Config) { c.State = filepath.Dir(c.Library) }, false}, {"zero workers", func(c *Config) { c.Workers = 0 }, false}, {"dedicated video", func(c *Config) { c.VideoWorkers = 1 }, true}, {"excess video workers", func(c *Config) { c.VideoWorkers = 2 }, false}, {"negative video workers", func(c *Config) { c.VideoWorkers = -1 }, false}, {"huge pixel limit", func(c *Config) { c.MaxPixels = 300_000_000 }, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := c
 			tc.change(&cfg)
@@ -552,6 +552,15 @@ func TestConfigValidation(t *testing.T) {
 				t.Fatalf("validation: %v", err)
 			}
 		})
+	}
+	// Existing deployments omit video_workers; upgrading should enable the
+	// separate bounded queue without requiring a config-file edit.
+	data, _ := json.Marshal(map[string]any{"library": c.Library, "state": c.State})
+	filename := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(filename, data, 0600)
+	loaded, err := loadConfig(filename)
+	if err != nil || loaded.VideoWorkers != 1 || loaded.Workers != 1 {
+		t.Fatal("upgrade defaults", loaded, err)
 	}
 }
 

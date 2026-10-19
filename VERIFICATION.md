@@ -1,6 +1,31 @@
 # Verification
 
-Verified on 18–19 October 2026 with Go 1.27.2 on Linux x86-64, AMD Ryzen 5 5500U (6 cores / 12 logical CPUs). Results are development-machine measurements, not guarantees for an undecided Alpine server.
+Verified on 18–19 October 2026 with Go 1.27.2 on Linux x86-64, AMD Ryzen 5 5500U (6 cores / 12 logical CPUs). Results are development-machine measurements, not guarantees for the deployed Alpine/NAS server.
+
+## Version 1.3: preview generation and quicker viewing
+
+The renderer now reduces large images using area averaging before the final Catmull-Rom pass and applies EXIF rotation/mirroring to the smaller result. Tests cover all eight transforms, nonzero source bounds, fine-pattern antialiasing, alpha compositing, and YCbCr colors. Cache tests cover thumbnail reuse with the source library offline, background-job promotion without duplicate rendering, timestamp throttling, cache replacement accounting, and an image request completing while a dedicated video worker is busy. Embedded RAW tests cover numeric camera orientation, avoiding an unnecessary metadata probe/development, and rejection of corrupt or undersized JPEG candidates. In Alpine 3.24.2, real ExifTool extraction from `synthetic-preview.dng` verified its base64 JPEG and numeric Orientation 6; the cache produced a correctly rotated 96 × 128 preview. The existing DNG without a preview exercised LibRaw fallback. HEIC, MP4/WebM conversion, unchanged source bytes, and HTTP range delivery were rechecked using the real optional packages.
+
+The viewer displays a thumbnail while loading detail, swaps in the loaded image node, and prefetches one next still at low priority. JavaScript tests verify the swap, stale-request guards, cancellation, video/bookmark exclusions, and retaining unchanged grid cards. Embedded web assets use gzip and representation-specific ETags; automated tests cover decompression, conditional requests, and compression negotiation. HTTP verification reduced `app.js` from 27,773 to 8,357 bytes (70% fewer transferred bytes).
+
+Browser checks verified immediate 480-pixel thumbnails followed by 1600-pixel previews, repeated next-item navigation, crossing from item 60 to 61 and returning to page 2, a rotated photo and details at 390 × 844, and restoring a bookmarked viewer after reload. No browser warnings/errors were observed. These are viewport checks, not physical-device/NAS timings. Go race tests, vet, JavaScript tests, and shell syntax checks passed.
+
+Preview benchmark command (Go 1.27.2, Linux amd64, Ryzen 5 5500U):
+
+```sh
+GOMAXPROCS=1 go test -run '^$' -bench BenchmarkPreview12MP -benchtime=3x -count=2 -benchmem
+```
+
+Each measurement decodes a synthetic 4000 × 3000 JPEG, resizes/orients it, and JPEG-encodes the output. The baseline uses the version 1.2 renderer in the same test executable. Results average two runs of three renders each, on one Go execution thread. This is a local CPU benchmark: it excludes source-file/NAS I/O, HTTP, cache hits, browser rendering, and video conversion.
+
+| Output | Version 1.2 | Version 1.3 | Speedup | Allocated bytes/render, old → new |
+| --- | ---: | ---: | ---: | ---: |
+| Thumbnail, 480 px | 3.620 s | 0.561 s | 6.4× | 207.5 → 24.2 MiB |
+| Thumbnail, rotated | 3.452 s | 0.567 s | 6.1× | 207.5 → 24.9 MiB |
+| Viewer, 1600 px | 4.076 s | 0.956 s | 4.3× | 318.0 → 109.6 MiB |
+| Viewer, rotated | 3.930 s | 0.967 s | 4.1× | 318.0 → 116.9 MiB |
+
+Allocation figures are cumulative bytes allocated during one render, **not peak process RSS or a memory cap**. Actual photos, CPUs, NAS latency, and concurrent work change the timings. No deployed Proxmox/NAS measurements were available. The 100,000-entry index measurements below remain the version 1.0 baseline.
 
 ## Version 1.2: gallery password, version settings, and optional media
 

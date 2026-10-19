@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -55,6 +56,12 @@ func (b *cappedOutput) Write(p []byte) (int, error) {
 // A verified open descriptor avoids resolving a library path again in a helper.
 // Helpers never receive the original pathname or shell-interpolated arguments.
 func mediaCommand(ctx context.Context, f *os.File, dir, name string, args ...string) ([]byte, error) {
+	return runMediaCommand(ctx, f, dir, name, false, 2<<20, args...)
+}
+func lowPriorityMediaCommand(ctx context.Context, f *os.File, dir, name string, args ...string) ([]byte, error) {
+	return runMediaCommand(ctx, f, dir, name, true, 2<<20, args...)
+}
+func runMediaCommand(ctx context.Context, f *os.File, dir, name string, lowPriority bool, outputLimit int, args ...string) ([]byte, error) {
 	if _, err := exec.LookPath(name); err != nil {
 		return nil, fmt.Errorf("%s is not installed; see Settings → Media support", name)
 	}
@@ -65,11 +72,18 @@ func mediaCommand(ctx context.Context, f *os.File, dir, name string, args ...str
 	cmd.ExtraFiles = []*os.File{f}
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1")
-	stdout := &cappedOutput{limit: 2 << 20}
+	stdout := &cappedOutput{limit: outputLimit}
 	stderr := &cappedOutput{limit: 4096}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Start()
+	if err == nil {
+		if lowPriority {
+			_ = syscall.Setpriority(syscall.PRIO_PROCESS, cmd.Process.Pid, 10)
+		}
+		err = cmd.Wait()
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("%s: %w", name, ctx.Err())
 		}
@@ -177,16 +191,17 @@ func withinPixelLimit(w, h int, limit int64) bool {
 	return w > 0 && h > 0 && int64(w) <= limit/int64(h)
 }
 
-func (c *ImageCache) convertedSource(f *os.File, p Photo, size int) (*os.File, func(), error) {
+func (c *ImageCache) convertedSource(f *os.File, p Photo, size int) (*os.File, int, func(), error) {
 	dir, err := os.MkdirTemp(c.dir, "convert-*.tmp")
 	if err != nil {
-		return nil, nil, err
+		return nil, 1, nil, err
 	}
 	cleanup := func() { os.RemoveAll(dir) }
 	ctx, cancel := context.WithTimeout(c.ctx, 90*time.Second)
 	defer cancel()
 	output := filepath.Join(dir, "frame.jpg")
 	kind := mediaKind(p.Name)
+	orientation := 1
 	switch kind {
 	case "video":
 		_, err = probeVideo(ctx, f, p, dir, c.cfg.MaxPixels)
@@ -194,8 +209,12 @@ func (c *ImageCache) convertedSource(f *os.File, p Photo, size int) (*os.File, f
 			_, err = mediaCommand(ctx, f, dir, "ffmpeg", "-v", "error", "-nostdin", "-threads", "1", "-filter_threads", "1", "-protocol_whitelist", "file,pipe", "-f", videoDemuxer(p.Name), "-i", sourceFD, "-map", "0:v:0", "-frames:v", "1", "-vf", fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", size, size), "-an", "-y", output)
 		}
 	case "raw", "heic":
-		probe := Photo{Tags: []string{}}
-		readExtendedMetadata(ctx, f, &probe, dir)
+		probe := p
+		probe.Error = ""
+		if probe.Width < 1 || probe.Height < 1 {
+			probe = Photo{Tags: []string{}}
+			readExtendedMetadata(ctx, f, &probe, dir)
+		}
 		if probe.Error != "" {
 			err = errors.New(probe.Error)
 		} else if !withinPixelLimit(probe.Width, probe.Height, c.cfg.MaxPixels) {
@@ -206,8 +225,13 @@ func (c *ImageCache) convertedSource(f *os.File, p Photo, size int) (*os.File, f
 				output = filepath.Join(dir, "frame.png")
 				_, err = mediaCommand(ctx, f, dir, "heif-thumbnailer", "-p", "-s", strconv.Itoa(size), sourceFD, output)
 			} else {
-				output = filepath.Join(dir, "frame.tiff")
-				_, err = mediaCommand(ctx, f, dir, "dcraw_emu", "-q", "0", "-h", "-w", "-T", "-Z", output, sourceFD)
+				if embedded, flip := rawEmbeddedPreview(ctx, f, probe, size, dir, c.cfg.MaxPixels); embedded != "" {
+					output = embedded
+					orientation = flip
+				} else {
+					output = filepath.Join(dir, "frame.tiff")
+					_, err = mediaCommand(ctx, f, dir, "dcraw_emu", "-q", "0", "-h", "-w", "-T", "-Z", output, sourceFD)
+				}
 			}
 		}
 	default:
@@ -215,14 +239,14 @@ func (c *ImageCache) convertedSource(f *os.File, p Photo, size int) (*os.File, f
 	}
 	if err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, 1, nil, err
 	}
 	converted, err := os.Open(output)
 	if err != nil {
 		cleanup()
-		return nil, nil, errors.New("decoder produced no preview")
+		return nil, 1, nil, errors.New("decoder produced no preview")
 	}
-	return converted, func() { converted.Close(); cleanup() }, nil
+	return converted, orientation, func() { converted.Close(); cleanup() }, nil
 }
 func (c *ImageCache) generateVideo(f *os.File, job *imageJob) error {
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Minute)
@@ -239,7 +263,7 @@ func (c *ImageCache) generateVideo(f *os.File, job *imageJob) error {
 	tmp.Close()
 	defer os.Remove(name)
 	limit := min(c.cfg.CacheBytes, int64(512<<20))
-	_, err = mediaCommand(ctx, f, c.dir, "ffmpeg", "-v", "error", "-nostdin", "-threads", "1", "-filter_threads", "1", "-protocol_whitelist", "file,pipe", "-f", videoDemuxer(job.p.Name), "-i", sourceFD, "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "25", "-pix_fmt", "yuv420p", "-threads", "1", "-c:a", "aac", "-b:a", "128k", "-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1", "-movflags", "+faststart", "-fs", strconv.FormatInt(limit+1, 10), "-f", "mp4", "-y", name)
+	_, err = lowPriorityMediaCommand(ctx, f, c.dir, "ffmpeg", "-v", "error", "-nostdin", "-threads", "1", "-filter_threads", "1", "-protocol_whitelist", "file,pipe", "-f", videoDemuxer(job.p.Name), "-i", sourceFD, "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "25", "-pix_fmt", "yuv420p", "-threads", "1", "-c:a", "aac", "-b:a", "128k", "-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1", "-movflags", "+faststart", "-fs", strconv.FormatInt(limit+1, 10), "-f", "mp4", "-y", name)
 	if err != nil {
 		return err
 	}
@@ -300,8 +324,7 @@ func (a *App) video(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "preview.mp4", info.ModTime(), f)
 }
 
-// The same eviction budget and worker queue cover thumbnails, still previews,
-// and seekable MP4 video previews.
+// Thumbnails, still previews, and MP4 previews share one eviction budget.
 func (c *ImageCache) commitCache(name, key string, size int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -311,7 +334,11 @@ func (c *ImageCache) commitCache(name, key string, size int64) error {
 	if err := os.Rename(name, filepath.Join(c.dir, key)); err != nil {
 		return err
 	}
-	c.entries[key] = c.lru.PushFront(cacheEntry{key, size})
+	if old := c.entries[key]; old != nil {
+		c.bytes -= old.Value.(cacheEntry).size
+		c.lru.Remove(old)
+	}
+	c.entries[key] = c.lru.PushFront(cacheEntry{name: key, size: size, touched: time.Now()})
 	c.bytes += size
 	return nil
 }
