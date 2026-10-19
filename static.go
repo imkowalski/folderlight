@@ -29,7 +29,7 @@ func staticAssets() http.Handler {
 		files, _ := fs.Sub(assets, "web")
 		fallback := http.FileServer(http.FS(files))
 		saved := map[string]asset{}
-		for _, name := range []string{"index.html", "app.js", "style.css", "favicon.svg"} {
+		for _, name := range []string{"index.html", "media.js", "app.js", "style.css", "favicon.svg"} {
 			data, err := fs.ReadFile(files, name)
 			if err != nil {
 				continue

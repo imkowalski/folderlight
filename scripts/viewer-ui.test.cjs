@@ -4,12 +4,13 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const path=require('node:path');
 const source=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8');
-const viewerFunctions=source.slice(source.indexOf('class PreviewBuffer {'),source.indexOf('function stopVideo()'));
+const mediaSource=fs.readFileSync(path.join(__dirname,'../web/media.js'),'utf8');
+const viewerFunctions=mediaSource+'\n'+source.slice(source.indexOf('const previews='),source.indexOf('function stopVideo()'));
 const stepFunction=source.slice(source.indexOf('async function stepPhoto('),source.indexOf('async function updateStatus()'));
 const photo=id=>({id,name:`photo${id}.jpg`,kind:'image'});
 const page=(number,ids,total=ids.length,limit=60)=>({page:number,photos:ids.map(photo),total,limit});
 async function flush(){for(let n=0;n<8;n++)await Promise.resolve();}
-function setup(initial=page(1,[1,2,3]),loader){
+function setup(initial=page(1,[1,2,3]),loader,size='preview'){
   const elements=new Map(),created=[],requests=[],pages=[],timers=[];
   class Image{
     constructor(){this.isConnected=false;this.hidden=true;this._src='';created.push(this);}
@@ -22,8 +23,8 @@ function setup(initial=page(1,[1,2,3]),loader){
   }
   const thumb=new Image();thumb.isConnected=true;
   elements.set('viewer-image',thumb);elements.set('viewer',{open:true});elements.set('viewer-loading',{hidden:false});elements.set('viewer-error',{hidden:true});
-  const context=vm.createContext({Image,AbortController,URLSearchParams,$:id=>elements.get(id),imageURL:(p,size='thumb')=>`/api/image?id=${p.id}&size=${size}`,params:o=>new URLSearchParams(o),setTimeout:fn=>timers.push(fn),api:async(url,options)=>{pages.push(url);return loader?loader(url,options):Promise.reject(Error('Unexpected page request'));}});
-  vm.runInContext(`let listing=${JSON.stringify(initial)},viewSequence=1,viewerSession=0,pageBusy=false,gridDirty=false,photoIndex=-1;const state={page:listing.page};const viewerPages=new Map(); ${viewerFunctions} ${stepFunction}
+  const context=vm.createContext({Image,AbortController,URLSearchParams,$:id=>elements.get(id),viewerPreviewSize:()=>size,thumbnails:{loadedURL:()=>null,untrack:image=>image.removeAttribute('src')},window:{addEventListener(){},innerHeight:844},imageURL:(p,size='thumb')=>`/api/image?id=${p.id}&size=${size}`,params:o=>new URLSearchParams(o),setTimeout:fn=>timers.push(fn),api:async(url,options)=>{pages.push(url);return loader?loader(url,options):Promise.reject(Error('Unexpected page request'));}});
+  vm.runInContext(`let listing=${JSON.stringify(initial)},viewSequence=1,viewerSession=0,pageBusy=false,gridDirty=false,photoIndex=-1,viewerDirection=1;const state={page:listing.page};const viewerPages=new Map(); ${viewerFunctions} ${stepFunction}
     function openViewer(photo,index){photoIndex=index;++viewSequence;rememberViewerPage(listing);resetViewerImage(photo);loadViewerStill(photo,index,viewSequence);}
     rememberViewerPage(listing);`,context);
   const run=code=>vm.runInContext(code,context);
@@ -32,10 +33,11 @@ function setup(initial=page(1,[1,2,3]),loader){
   return {run,entry,open,elements,created,requests,pages,timers,thumb};
 }
 
-test('paint a thumbnail first, decode detail, then preload previous and next',async()=>{
+test('paint a thumbnail first and start both neighbours before detail finishes',async()=>{
   const s=setup();s.open(1);
   const thumb=s.elements.get('viewer-image');assert.match(thumb.src,/id=2&size=thumb/);
   await thumb.finish();assert.equal(thumb.hidden,false);
+  assert.ok(s.entry(1));assert.ok(s.entry(3));assert.equal(s.entry(2).ready,false);
   assert.equal(s.entry(2).image.fetchPriority,'high');
   await s.entry(2).image.finish();
   assert.equal(s.elements.get('viewer-image'),s.entry(2).image);
@@ -114,5 +116,18 @@ test('grid refresh retains matching cards and cancels only discarded requests',(
   const fn=source.slice(source.indexOf('function replaceCards('),source.indexOf('async function loadListing()'));
   let cancelled=0;const retained={querySelectorAll:()=>[{removeAttribute:()=>{throw Error('retained image cancelled');}}]};const discarded={querySelectorAll:()=>[{removeAttribute:()=>cancelled++}]};
   const container={children:[retained,discarded],replaceChildren(...cards){this.children=cards;}};
-  const context=vm.createContext({container,retained});vm.runInContext(fn+';replaceCards(container,[retained]);',context);assert.equal(cancelled,1);assert.deepEqual(container.children,[retained]);
+  const context=vm.createContext({container,retained,thumbnails:{untrack:image=>image.removeAttribute('src')}});vm.runInContext(fn+';replaceCards(container,[retained]);',context);assert.equal(cancelled,1);assert.deepEqual(container.children,[retained]);
+});
+
+test('phone uses screen previews and HD upgrade preserves the visible image',async()=>{
+ const s=setup(page(1,[1,2,3]),undefined,'screen');s.open(1);
+ assert.match(s.entry(2).image.src,/size=screen/);
+ assert.match(s.entry(1).image.src,/size=screen.*priority=background/);
+ await s.entry(2).image.finish();const old=s.entry(2).image;
+ s.run('previews.acquire(listing.photos[1],false,"preview")');
+ assert.match(old.src,/size=screen/);assert.equal(s.elements.get('viewer-image'),old);
+ assert.match(s.entry(2).image.src,/size=preview$/);
+ await s.entry(2).image.finish();
+ const hd=s.entry(2);assert.equal(s.run('previews.acquire(listing.photos[1]).size'),'preview');assert.equal(s.entry(2),hd);
+ s.run('clearViewerPreloads()');assert.equal(s.run('previews.entries.size'),0);
 });

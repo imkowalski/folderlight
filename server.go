@@ -210,10 +210,14 @@ func (a *App) image(w http.ResponseWriter, r *http.Request) {
 	size := 480
 	switch r.URL.Query().Get("size") {
 	case "", "thumb":
+	case "small":
+		size = 240
+	case "screen":
+		size = 1024
 	case "preview":
 		size = 1600
 	default:
-		apiError(w, 400, "size must be thumb or preview")
+		apiError(w, 400, "size must be small, thumb, screen, or preview")
 		return
 	}
 	etag := `"` + cacheKey(p, size) + `"`

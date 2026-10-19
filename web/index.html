@@ -8,6 +8,7 @@
   <title>Folderlight · Media library</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <script defer src="/media.js"></script>
   <script defer src="/app.js"></script>
 </head>
 <body>
@@ -62,7 +63,7 @@
     <footer><span class="read-only">Read-only library</span></footer>
   </main>
   <dialog id="viewer" aria-labelledby="viewer-title">
-    <div class="viewer-bar"><div><p id="viewer-position" class="small"></p><h2 id="viewer-title"></h2></div><div><button class="viewer-button" id="info-toggle" aria-label="Toggle image details" aria-expanded="false">ⓘ <span>Details</span></button><button class="viewer-button" id="viewer-close" aria-label="Close media viewer">×</button></div></div>
+    <div class="viewer-bar"><div><p id="viewer-position" class="small"></p><h2 id="viewer-title"></h2></div><div><button class="viewer-button" id="viewer-hd" aria-label="Load full-detail preview" title="Load full detail (1600 pixels)" hidden>HD</button><button class="viewer-button" id="info-toggle" aria-label="Toggle image details" aria-expanded="false">ⓘ <span>Details</span></button><button class="viewer-button" id="viewer-close" aria-label="Close media viewer">×</button></div></div>
     <div class="viewer-body"><div id="image-stage" class="image-stage"><p id="viewer-loading" role="status">Loading preview…</p><img id="viewer-image" alt=""><video id="viewer-video" controls playsinline preload="metadata" hidden aria-label="Video preview"></video><button id="viewer-prev" class="viewer-arrow previous" aria-label="Previous item">‹</button><button id="viewer-next" class="viewer-arrow next" aria-label="Next item">›</button><div id="viewer-error" role="alert" hidden></div></div>
     <aside id="details" hidden><p class="eyebrow">THE DETAILS</p><h3>Image details</h3><dl id="metadata"></dl><h4>Tags</h4><div id="viewer-tags" class="tags"></div><button id="open-folder" class="viewer-button">Open containing folder ↗</button></aside></div>
     <div class="viewer-footer"><span>← → to explore</span><span>Swipe to browse · Esc to close</span></div>

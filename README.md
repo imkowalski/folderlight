@@ -129,7 +129,7 @@ rc-service folderlight status
 tail -n 30 /var/log/folderlight.log
 ```
 
-Or install a particular published release with `/usr/local/bin/folderlight-update v1.4.0`. Using the full path also works when `/usr/local/bin` is absent from your shell’s `PATH`. The updater selects amd64 or arm64, downloads the release archive and its SHA-256 manifest, checks the archive, verifies the executable can run, saves the previous executable as `/usr/local/bin/folderlight.previous`, and replaces the binary. It stops/restarts the service only if it was already running. Download or checksum failures occur before stopping the service. SHA-256 detects corruption; the release and checksum both rely on trust in this GitHub repository and HTTPS.
+Or install a particular published release with `/usr/local/bin/folderlight-update v1.5.0`. Using the full path also works when `/usr/local/bin` is absent from your shell’s `PATH`. The updater selects amd64 or arm64, downloads the release archive and its SHA-256 manifest, checks the archive, verifies the executable can run, saves the previous executable as `/usr/local/bin/folderlight.previous`, and replaces the binary. It stops/restarts the service only if it was already running. Download or checksum failures occur before stopping the service. SHA-256 detects corruption; the release and checksum both rely on trust in this GitHub repository and HTTPS.
 
 The updater changes only `/usr/local/bin/folderlight` and its previous-binary copy. It does not overwrite your config, OpenRC service, updater script, state directory, or NAS mount. Normal application startup can migrate the index when a new version requires it. Read release notes before upgrading, and back up configuration/state with the app stopped before a major upgrade or planned downgrade. A previous executable alone cannot undo database migrations.
 
@@ -157,11 +157,17 @@ The app sets a soft Go memory target of 256 MiB unless `GOMEMLIMIT` is supplied.
 
 ## Preview and viewing performance
 
-The viewer shows a thumbnail immediately, replaces it with the detailed preview, and preloads both the previous and next still image. It retains the current image and its two neighbours as decoded browser images, so opening a ready neighbour needs no new image request or thumbnail transition. At page boundaries it also prepares the adjacent results page and preview. The buffer holds at most three preview images and three pages of metadata; closing the viewer, navigating elsewhere, or signing out clears it and cancels pending work. Background previews run behind visible images, and an unfinished preload is promoted when opened. Video playback is prepared only when explicitly opened. The grid retains unchanged image cards during scan refreshes and sorting, and loads the first visible cards eagerly while lazy-loading the rest.
+Phones and touch devices use a smaller screen preview first, with an **HD** button for the 1600-pixel preview. The screen profile fits within 1024 pixels; JPEGs use the closest smaller native decode size (usually 640–1024 pixels), avoiding another resize. A 4000-pixel camera JPEG becomes 1000 pixels directly. Desktop viewing keeps the 1600-pixel profile. PNG/WebP also get smaller phone output, although their decoders still read the full image.
 
-New thumbnails reuse a cached 1600-pixel preview when available, avoiding another read from the NAS and another full-size decode. Rendering reduces large photos before the final filter and applies rotation to the small result. Existing disk previews remain valid after updating; no cache deletion, forced scan, or config edit is required. Embedded web assets are gzip-compressed and use ETags to reduce repeat transfers. Media requests still check gallery authentication. Matching browser ETags return 304 immediately after authentication and index lookup, without opening a cache file or regenerating an evicted preview from the NAS. Fresh detail requests on photo navigation continue to check the session.
+The viewer shows a cached grid thumbnail while detail loads. Both previous and next still previews start immediately, with the direction of travel prepared first. Current/previous/next decoded browser images are retained, so a ready neighbour opens without another image request or thumbnail transition. At page boundaries it also prepares the adjacent results page and preview. Closing the viewer, navigating elsewhere, or signing out clears these buffers and cancels pending work. HD upgrades leave the screen preview visible while loading. Video playback is prepared only when explicitly opened.
 
-On the development machine, a synthetic 12-megapixel JPEG rendered about 6× faster as a thumbnail and 4× faster as a viewer preview than version 1.2. This measures decoding, resizing, orientation, and encoding; NAS/network speed and video transcoding were excluded. See `VERIFICATION.md` for the commands and allocation measurements.
+The grid requests only images near the viewport, with at most three downloads active. Phone thumbnails fit within 240 pixels; desktop thumbnails fit within 480. Opening the viewer pauses pending grid downloads so they cannot occupy the connections needed by photo previews. Closing it resumes the grid. Unchanged cards survive scan refreshes and sorting.
+
+JPEG decoding uses a pure-Go scaled inverse transform to reconstruct fewer pixels directly, with buffered source reads. No extra Alpine package or CGO is required. Original image dimensions are still checked against `max_pixels` before scaling. Existing larger cached previews can supply smaller variants without reading the NAS again. Existing 480/1600-pixel disk previews remain valid after updating; no cache deletion, forced scan, or config edit is required.
+
+Embedded web assets are gzip-compressed and use ETags. Matching media ETags return 304 after authentication and index lookup, without opening a cache file or regenerating an evicted preview from the NAS. Background previews run behind foreground image work; an unfinished preload is promoted when opened. Fresh detail requests continue to check the session.
+
+A local synthetic 12-megapixel JPEG benchmark measured **0.938 s** for the previous phone default (1600 pixels), **0.314 s** for the new phone profile, and **0.646 s** for the new 1600-pixel HD profile. The smaller phone output trades resolution for speed; HD remains available. Phone rendering allocated 7.0 MiB versus 117.1 MiB previously. These are CPU/render measurements, not deployed NAS or physical-phone timings. The first uncached preview still needs to read the source file from storage. See `VERIFICATION.md` for commands, hardware, and limits.
 
 ## Browsing and search
 
@@ -176,7 +182,7 @@ On the development machine, a synthetic 12-megapixel JPEG rendered about 6× fas
 - Folder, search, scope, sort, page, and the open viewer image are bookmarkable in the URL.
 - Use the viewer's arrows, left/right keys, or horizontal swipes to move through the current result set, including across page boundaries. Escape closes the viewer.
 
-JPEG/JPG, PNG, WebP, and GIF work natively; RAW, HEIC, and video require the optional packages above. GIFs and animated WebP/PNG use a static frame for previews. Thumbnails fit inside 480 px; still viewer previews fit inside 1600 px. EXIF orientation is applied without modifying originals. Transparency is composited onto a light background. Still previews are JPEG and contain no copied EXIF/GPS metadata. Video previews omit source metadata and chapters. This is a preview gallery rather than a color-managed editing application.
+JPEG/JPG, PNG, WebP, and GIF work natively; RAW, HEIC, and video require the optional packages above. GIFs and animated WebP/PNG use a static frame for previews. Phone thumbnails fit inside 240 px and screen previews inside 1024 px; desktop thumbnails fit inside 480 px and HD/desktop previews inside 1600 px. EXIF orientation is applied without modifying originals. Transparency is composited onto a light background. Still previews are JPEG and contain no copied EXIF/GPS metadata. Video previews omit source metadata and chapters. This is a preview gallery rather than a color-managed editing application.
 
 Embedded tag sources are Windows `XPKeywords` (UTF-16LE, semicolon separated), IPTC Keywords, and XMP Dublin Core subjects in JPEG/PNG/WebP containers where those fields are supported. GIF metadata is not parsed. PNG international-text XMP and compressed XMP are supported. Tags are trimmed, Unicode-normalized for matching, and deduplicated without replacing their display spelling. Standard PNG `Keywords` text is also recognized. Legacy IPTC uses its declared character set, falling back to Latin-1 when no encoding is declared. No tags are guessed from the directory name, and no sidecar files are read.
 
@@ -204,7 +210,7 @@ If you intentionally replace or relocate the library root, stop the app and conf
 | `GET /api/browse` or `/api/search` | `folder`, `q`, `scope=tree\|folder\|all`, `sort=name\|date`, `tag`, `page`, `limit` (1–120); paginated folders/photos and counts |
 | `GET /api/tags` | `prefix`, `folder`, `scope=tree\|folder\|all`, `limit` (1–20); cached/scoped tag suggestions with image counts |
 | `GET /api/photo` | `id`; filename, relative folder/path, dimensions, dates, tags, warning |
-| `GET /api/image` | `id`, `size=thumb\|preview`; cached JPEG, private ETag; optional `priority=background` for speculative previews |
+| `GET /api/image` | `id`, `size` (`small`, `thumb`, `screen`, or `preview`); cached JPEG, private ETag; optional `priority=background` for speculative previews |
 | `GET /api/status` | Current/last scan progress, counters, and most recent warning |
 | `GET /api/settings` | Version, password-enabled/authenticated flags, media-tool status when authenticated |
 | `POST /api/login` | JSON `{"password":"…"}`; sets the session cookie |
@@ -232,7 +238,7 @@ sh scripts/build.sh
 
 For optional media integration tests in Alpine after installing the media packages, run `FOLDERLIGHT_MEDIA_TEST=1 CGO_ENABLED=0 go test -run TestRealMediaDecoders -v`. Tests generate synthetic HEIC/video fixtures and use `testdata/synthetic.dng`; no private library is needed. On a development machine, a static `go test -c` binary can be run inside Alpine without installing Go there. A mounted `/proc` is needed for verified descriptor input to helpers (normal Alpine/LXC deployments already provide it).
 
-Both executables, release archives, checksums, and dependency licenses are written to `dist/`. No C compiler is needed. For a race check on a development machine with a C compiler, use `go test -race ./...`.
+Both executables, release archives, checksums, and dependency licenses are written to `dist/`. JPEG scaling uses `go-scaled-jpeg`; this software is based in part on the work of the Independent JPEG Group. No C compiler is needed. For a race check on a development machine with a C compiler, use `go test -race ./...`.
 
 Run the opt-in large-library benchmark:
 

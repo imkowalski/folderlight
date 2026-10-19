@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/bep/imagemeta v0.17.2
+	github.com/m8rge/go-scaled-jpeg v1.2.0
 	golang.org/x/image v0.38.0
 	golang.org/x/text v0.35.0
 	modernc.org/sqlite v1.46.1

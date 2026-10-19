@@ -2,6 +2,33 @@
 
 Verified on 18–19 October 2026 with Go 1.27.2 on Linux x86-64, AMD Ryzen 5 5500U (6 cores / 12 logical CPUs). Results are development-machine measurements, not guarantees for the deployed Alpine/NAS server.
 
+## Version 1.5: phone previews and bounded image downloads
+
+The JPEG decoder now reconstructs a reduced image directly using a pure-Go scaled inverse transform, after checking the **original** dimensions against `max_pixels`. A 4000 × 3000 source becomes 1000 × 750 for the phone screen profile. Other dimensions use the closest smaller native size, typically 640–1024 pixels; HD remains 1600 pixels. Desktop defaults to HD. PNG/WebP receive smaller output but still use full-image decoders. Cached larger profiles can supply smaller ones without source access. Existing disk cache keys remain valid.
+
+The browser image scheduler and preview buffer live in `web/media.js`; native decoding lives in `raster.go`. The scheduler starts at most three grid downloads within 180 pixels of the viewport, aborts pending offscreen requests, and pauses grid work while the viewer is open. Both neighbouring previews start immediately, before the current one finishes, with the travel direction prepared first. The viewer retains decoded neighbours and keeps the smaller screen image visible during an HD upgrade.
+
+Thirteen viewer scenarios and four scheduler scenarios cover immediate neighbour prefetch, reuse, cancellation, page boundaries, background promotion, screen/HD transitions, a 60-card grid with only near-viewport requests, concurrency bounds, fast scrolling, retry cleanup, and pause/resume. Go tests cover all four API sizes and ETags, offline reuse of a screen preview for thumbnails, source pixel limits, truncation, scaled output/orientation, native IDCT sizes 1–7, and 30 valid Go JPEG fixtures including progressive, grayscale, RGB/CMYK, restart markers, and subsampling variants. Go race tests, vet, and JavaScript syntax/helper tests passed.
+
+Render benchmark (Go 1.27.2, Linux amd64, AMD Ryzen 5 5500U):
+
+```sh
+GOMAXPROCS=1 go test -run '^$' -bench BenchmarkMobilePreview12MP -benchtime=3x -count=2 -benchmem
+```
+
+Each iteration reads the same locally cached 4,510,098-byte synthetic 4000 × 3000 JPEG, decodes, resizes, rotates with Orientation 6, and JPEG-encodes to a discard writer. Results average two runs of three iterations on one Go execution thread. The baseline preserves the full-decode version 1.4 path in the same executable. This includes local buffered source reads with a warm filesystem cache; it excludes NAS latency, HTTP, cache-file writes, browser rendering, and video conversion.
+
+| Render profile | Mean duration | Allocated bytes/render |
+| --- | ---: | ---: |
+| Version 1.4 phone/desktop default, 1600 px, quality 85 | 0.938 s | 117.1 MiB |
+| Version 1.5 HD/desktop, 1600 px, quality 85 | 0.646 s | 92.7 MiB |
+| Version 1.5 phone, native 1000 px, quality 82 | 0.314 s | 7.0 MiB |
+| Version 1.5 phone thumbnail, 240 px, quality 80 | 0.271 s | 2.4 MiB |
+
+The new default phone path is about 3× faster with 16.8× fewer allocated bytes in this fixture. This comparison includes a smaller output and slightly lower JPEG quality. The same-size 1600-pixel comparison is about 1.45× faster. Allocated bytes are cumulative allocations, **not peak RSS**; progressive JPEG coefficient storage and different camera dimensions can change memory use. No physical phone, deployed Proxmox server, or NAS timing is claimed.
+
+Browser checks also verified the 60/61 result-page transition in both directions, page-two grid restoration, PNG and WebP 1024-pixel output, and a correctly rotated 750 × 1000 JPEG. At a 390 × 844 viewport, a disposable localhost HTTP proxy with 120 ms added request delay recorded the current screen request and both neighbouring screen requests starting within 12 ms of one another, before the first preview completed. The screen JPEG was 96,050 bytes (1000 × 750), versus 324,310 bytes for HD (1600 × 1200). Moving 02 → 03 → 02 reused the already requested previews; a newly exposed neighbour had its own speculative request, cancelled when no longer needed. While the viewer was open, grid requests remained paused. After closing, only eight of sixty photo cards had requested sources at the top of this viewport, all using the small profile. Bookmarked phone reload restored the correctly rotated screen preview. No browser console warnings/errors occurred in the checked flows. These local synthetic checks verify request behavior rather than real-network speed.
+
 ## Version 1.4: previous/next preloading and request reuse
 
 The viewer retains current/previous/next decoded Image objects rather than discarding a preload when it becomes visible. Both neighbours are prepared at low priority, including across result-page boundaries. Opening an unfinished preload promotes its render into the foreground queue. A separate cache holds at most three result pages; closing the viewer, changing the browsing context, or locking the gallery cancels pending work and clears both caches. Video playback is never prefetched.

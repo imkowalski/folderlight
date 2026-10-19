@@ -308,12 +308,17 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 			err = fmt.Errorf("image decode failed: %v", r)
 		}
 	}()
-	if job.size > 0 && job.size < 1600 {
-		if preview, openErr := c.open(cacheKey(job.p, 1600)); openErr == nil {
-			src, decodeErr := decodeRaster(preview, c.cfg.MaxPixels)
-			preview.Close()
-			if decodeErr == nil {
-				return c.saveStill(renderPreview(src, 1, job.size), job.key)
+	if job.size > 0 {
+		for _, larger := range []int{480, 1024, 1600} {
+			if larger <= job.size {
+				continue
+			}
+			if preview, openErr := c.open(cacheKey(job.p, larger)); openErr == nil {
+				src, decodeErr := decodeRaster(preview, c.cfg.MaxPixels, job.size)
+				preview.Close()
+				if decodeErr == nil {
+					return c.saveStill(renderPreview(src, 1, job.size), job.key, previewQuality(job.size))
+				}
 			}
 		}
 	}
@@ -347,33 +352,23 @@ func (c *ImageCache) generate(job *imageJob) (err error) {
 		f = converted
 		orientation = convertedOrientation
 	}
-	src, err := decodeRaster(f, c.cfg.MaxPixels)
+	src, err := decodeRaster(f, c.cfg.MaxPixels, job.size)
 	if err != nil {
 		return err
 	}
-	return c.saveStill(renderPreview(src, orientation, job.size), job.key)
+	return c.saveStill(renderPreview(src, orientation, job.size), job.key, previewQuality(job.size))
 }
-func decodeRaster(f *os.File, maxPixels int64) (image.Image, error) {
-	config, _, err := image.DecodeConfig(f)
-	if err != nil {
-		return nil, err
+func (c *ImageCache) saveStill(output image.Image, key string, qualities ...int) error {
+	quality := 85
+	if len(qualities) > 0 {
+		quality = qualities[0]
 	}
-	if !withinPixelLimit(config.Width, config.Height, maxPixels) {
-		return nil, errors.New("image exceeds configured max_pixels")
-	}
-	if _, err = f.Seek(0, 0); err != nil {
-		return nil, err
-	}
-	src, _, err := image.Decode(f)
-	return src, err
-}
-func (c *ImageCache) saveStill(output image.Image, key string) error {
 	tmp, err := os.CreateTemp(c.dir, "render-*.tmp")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if err = jpeg.Encode(tmp, output, &jpeg.Options{Quality: 85}); err != nil {
+	if err = jpeg.Encode(tmp, output, &jpeg.Options{Quality: quality}); err != nil {
 		tmp.Close()
 		return err
 	}
