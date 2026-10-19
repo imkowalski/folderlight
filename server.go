@@ -216,6 +216,17 @@ func (a *App) image(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "size must be thumb or preview")
 		return
 	}
+	etag := `"` + cacheKey(p, size) + `"`
+	// Authentication and the indexed file revision have already been checked.
+	// A browser that owns these exact bytes needs no disk open or regeneration,
+	// even if the server cache was evicted or the NAS is currently unavailable.
+	// Leave other HTTP preconditions and wildcard handling to ServeContent.
+	if r.Header.Get("If-Match") == "" && r.Header.Get("If-Unmodified-Since") == "" && matchesImageETag(r.Header.Get("If-None-Match"), etag) {
+		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+		w.Header().Set("ETag", etag)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	f, err := a.cache.getPriority(r.Context(), p, size, r.URL.Query().Get("priority") == "background")
 	if err != nil {
 		status := 422
@@ -234,6 +245,15 @@ func (a *App) image(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
-	w.Header().Set("ETag", `"`+cacheKey(p, size)+`"`)
+	w.Header().Set("ETag", etag)
 	http.ServeContent(w, r, "preview.jpg", info.ModTime(), f)
+}
+
+func matchesImageETag(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		if strings.TrimPrefix(strings.TrimSpace(candidate), "W/") == etag {
+			return true
+		}
+	}
+	return false
 }

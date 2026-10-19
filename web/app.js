@@ -3,7 +3,8 @@ const $ = id => document.getElementById(id);
 const state = { folder:'', q:'', scope:'tree', sort:'name', tag:'', page:1 };
 let listing = null, activePhoto = null, photoIndex = -1, listingRequest = null, viewerRequest = null, viewSequence = 0, pageBusy = false;
 let scanState = null, lastRefresh = 0, firstLoad = true;
-let viewerPreview=null, neighbourPreview=null, gridDirty=false;
+let gridDirty=false, viewerSession=0;
+const viewerPages=new Map();
 const number = new Intl.NumberFormat();
 const folderSVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>';
 
@@ -78,21 +79,123 @@ async function openViewer(photo,index=-1) {
   if(viewerRequest) viewerRequest.abort();viewerRequest=new AbortController();const signal=viewerRequest.signal;
   $('viewer-title').textContent=photo.name;$('viewer-position').textContent=index>=0?`Item ${number.format((listing.page-1)*listing.limit+index+1)} of ${number.format(listing.total)}`:'Media item';
   $('viewer-prev').disabled=index<0||(index===0&&listing.page===1);$('viewer-next').disabled=index<0||(index===listing.photos.length-1&&listing.page===Math.ceil(listing.total/listing.limit));
-  clearViewerPreloads();stopVideo();renderDetails(photo);$('viewer-loading').textContent='Loading preview…';$('viewer-loading').hidden=false;$('viewer-error').hidden=true;$('viewer-image').hidden=true;$('viewer-image').removeAttribute('src');$('viewer-image').alt=photo.name;
+  if(index>=0)rememberViewerPage(listing);
+  resetViewerImage(photo);stopVideo();renderDetails(photo);$('viewer-loading').textContent='Loading preview…';$('viewer-loading').hidden=false;$('viewer-error').hidden=true;$('viewer-image').hidden=true;
   if(!$('viewer').open) $('viewer').showModal();writeURL();
-  if(photo.kind==='video')prepareVideo(photo,sequence,signal);else loadViewerStill(photo,index,sequence);
+  if(photo.kind==='video'){previews.retain(knownNeighbours(listing,index));prepareVideo(photo,sequence,signal);prefetchNeighbours(index,sequence);}else loadViewerStill(photo,index,sequence);
   // Fetch fresh details for bookmarked photos and after metadata updates.
   try {const fresh=await api('/api/photo?id='+photo.id,{signal});if(sequence===viewSequence){activePhoto=fresh;renderDetails(fresh);}} catch(e){if(e.name!=='AbortError'&&sequence===viewSequence){$('viewer-error').textContent=e.message;$('viewer-error').hidden=false;}}
 }
-function clearViewerPreloads(){for(const img of [viewerPreview,neighbourPreview])if(img){img.onload=null;img.onerror=null;if(!img.isConnected)img.removeAttribute('src');}viewerPreview=null;neighbourPreview=null;}
-function loadViewerStill(photo,index,sequence){
-  const thumbnail=$('viewer-image');thumbnail.onload=()=>{if(sequence===viewSequence&&thumbnail.isConnected){thumbnail.hidden=false;$('viewer-loading').textContent='Loading detail…';}};thumbnail.onerror=()=>{};thumbnail.src=imageURL(photo);
-  const preview=new Image();viewerPreview=preview;preview.id='viewer-image';preview.alt=photo.name;preview.decoding='async';preview.fetchPriority='high';let attempts=0;
-  preview.onload=()=>{if(sequence!==viewSequence||!$('viewer').open)return;const current=$('viewer-image');current.onload=null;current.onerror=null;current.replaceWith(preview);preview.hidden=false;$('viewer-loading').hidden=true;prefetchNeighbour(index);};
-  preview.onerror=()=>{if(sequence!==viewSequence||!$('viewer').open)return;if(attempts++<2)setTimeout(()=>{if(sequence===viewSequence&&$('viewer').open)preview.src=imageURL(photo,'preview')+'&retry='+attempts;},attempts*1500);else{$('viewer-loading').hidden=true;$('viewer-error').textContent='The detailed preview is unavailable. Check Settings for media tools or scan warnings.';$('viewer-error').hidden=false;}};
-  preview.src=imageURL(photo,'preview');
+// Keep decoded Image objects, so moving to a ready neighbour does not issue
+// another HTTP request or decode it again. Only current/previous/next survive.
+class PreviewBuffer {
+  constructor() { this.entries=new Map(); }
+  owns(image) { return [...this.entries.values()].some(entry=>entry.image===image); }
+  acquire(photo, background=false) {
+    const key=imageURL(photo,'preview');
+    let entry=this.entries.get(key);
+    if(entry?.failed) { this.discard(key);entry=null; }
+    if(!entry) {
+      entry={key,image:new Image(),ready:false,failed:false,background,ticket:0};
+      entry.promise=new Promise((resolve,reject)=>{entry.resolve=resolve;entry.reject=reject;});
+      entry.promise.catch(()=>{}); // Speculative failures are reported only if opened.
+      this.entries.set(key,entry);this.start(entry,background);
+    } else if(!background&&!entry.ready&&entry.background) {
+      // Promote an unfinished background render into the server's visible queue.
+      this.start(entry,false);
+    }
+    return entry;
+  }
+  start(entry,background) {
+    const image=entry.image,ticket=++entry.ticket;
+    entry.background=background;image.decoding='async';image.fetchPriority=background?'low':'high';
+    const fail=error=>{if(ticket!==entry.ticket)return;entry.failed=true;entry.reject(error);};
+    image.onload=async()=>{
+      try { if(image.decode)await image.decode(); }
+      catch(error) { fail(error);return; }
+      if(ticket!==entry.ticket)return;
+      entry.ready=true;entry.resolve(image);
+    };
+    image.onerror=()=>fail(new Error('The detailed preview could not be loaded.'));
+    image.src=entry.key+(background?'&priority=background':'');
+  }
+  retain(photos) {
+    const keep=new Set(photos.map(photo=>imageURL(photo,'preview')));
+    for(const key of this.entries.keys())if(!keep.has(key))this.discard(key);
+  }
+  discard(key) {
+    const entry=this.entries.get(key);if(!entry)return;
+    this.entries.delete(key);++entry.ticket;entry.image.onload=null;entry.image.onerror=null;entry.image.removeAttribute('src');
+    const error=new Error('Preview cancelled');error.name='AbortError';entry.reject(error);
+  }
+  clear() { for(const key of this.entries.keys())this.discard(key); }
 }
-function prefetchNeighbour(index){if(index<0)return;const next=listing?.photos[index+1];if(!next||next.kind==='video')return;const img=new Image();neighbourPreview=img;img.decoding='async';img.fetchPriority='low';img.src=imageURL(next,'preview')+'&priority=background';}
+const previews=new PreviewBuffer();
+
+function rememberViewerPage(page) {
+  viewerPages.set(page.page,{data:page,promise:Promise.resolve(page)});
+  for(const [number,entry] of viewerPages)if(Math.abs(number-page.page)>1){entry.controller?.abort();viewerPages.delete(number);}
+}
+function loadViewerPage(number) {
+  const cached=viewerPages.get(number);if(cached)return cached.promise;
+  const controller=new AbortController();const entry={controller};viewerPages.set(number,entry);
+  entry.promise=api('/api/browse?'+params({page:number}),{signal:controller.signal}).then(data=>{
+    entry.data=data;return data;
+  }).catch(error=>{if(viewerPages.get(number)===entry)viewerPages.delete(number);throw error;});
+  return entry.promise;
+}
+function knownNeighbours(page,index) {
+  if(index<0)return [];
+  return [index>0?page.photos[index-1]:viewerPages.get(page.page-1)?.data?.photos.at(-1),
+    index+1<page.photos.length?page.photos[index+1]:viewerPages.get(page.page+1)?.data?.photos[0]]
+    .filter(photo=>photo&&photo.kind!=='video');
+}
+function clearViewerPreloads() {
+  ++viewerSession;pageBusy=false;previews.clear();
+  for(const entry of viewerPages.values())entry.controller?.abort();viewerPages.clear();
+}
+function resetViewerImage(photo) {
+  const old=$('viewer-image'),image=new Image();image.id='viewer-image';image.alt=photo.name;image.hidden=true;
+  old.replaceWith(image);
+  if(!previews.owns(old)){old.onload=null;old.onerror=null;old.removeAttribute('src');}
+}
+function showViewerPreview(image,photo,index,sequence) {
+  if(sequence!==viewSequence||!$('viewer').open)return;
+  const current=$('viewer-image');image.id='viewer-image';image.alt=photo.name;
+  if(current!==image){current.onload=null;current.onerror=null;current.replaceWith(image);current.removeAttribute('src');}
+  image.hidden=false;$('viewer-loading').hidden=true;
+  prefetchNeighbours(index,sequence);
+}
+function loadViewerStill(photo,index,sequence) {
+  const entry=previews.acquire(photo);
+  previews.retain([photo,...knownNeighbours(listing,index)]);
+  if(entry.ready){showViewerPreview(entry.image,photo,index,sequence);return;}
+  const thumbnail=$('viewer-image');thumbnail.onload=()=>{if(sequence===viewSequence&&thumbnail.isConnected){thumbnail.hidden=false;$('viewer-loading').textContent='Loading detail…';}};thumbnail.onerror=()=>{};thumbnail.src=imageURL(photo);
+  function watch(entry,attempt=0) {
+    entry.promise.then(image=>showViewerPreview(image,photo,index,sequence)).catch(error=>{
+      if(sequence!==viewSequence||!$('viewer').open||error.name==='AbortError')return;
+      if(attempt<2)setTimeout(()=>{if(sequence===viewSequence&&$('viewer').open)watch(previews.acquire(photo),attempt+1);},(attempt+1)*1500);
+      else{$('viewer-loading').hidden=true;$('viewer-error').textContent='The detailed preview is unavailable. Check Settings for media tools or scan warnings.';$('viewer-error').hidden=false;}
+    });
+  }
+  watch(entry);
+}
+async function prefetchNeighbours(index,sequence) {
+  if(index<0||!listing||sequence!==viewSequence)return;
+  const page=listing,photo=page.photos[index];
+  const prepare=()=>{
+    if(sequence!==viewSequence||!$('viewer').open)return;
+    const neighbours=knownNeighbours(page,index);previews.retain([photo,...neighbours]);
+    for(const neighbour of neighbours)previews.acquire(neighbour,true);
+  };
+  prepare();
+  const pages=[];
+  if(index===0&&page.page>1)pages.push(page.page-1);
+  if(index===page.photos.length-1&&page.page<Math.ceil(page.total/page.limit))pages.push(page.page+1);
+  await Promise.all(pages.map(async number=>{
+    try{await loadViewerPage(number);prepare();}catch{/* Retry on demand if speculative page loading fails. */}
+  }));
+}
 function stopVideo(){const video=$('viewer-video');video.pause();video.removeAttribute('src');video.removeAttribute('poster');video.load();video.hidden=true;}
 async function prepareVideo(photo,sequence,signal){
   $('viewer-loading').textContent='Preparing video preview… First playback can take a few minutes.';
@@ -110,7 +213,8 @@ async function stepPhoto(direction) {
   if(pageBusy||photoIndex<0||!listing) return;const next=photoIndex+direction;
   if(next>=0&&next<listing.photos.length){openViewer(listing.photos[next],next);return;}
   const nextPage=listing.page+direction;if(nextPage<1||nextPage>Math.ceil(listing.total/listing.limit))return;pageBusy=true;
-  try {const result=await api('/api/browse?'+params({page:nextPage}));if(!$('viewer').open)return;listing=result;state.page=result.page;gridDirty=true;const index=direction>0?0:listing.photos.length-1;if(index>=0)openViewer(listing.photos[index],index);}catch(e){$('viewer-error').textContent=e.message;$('viewer-error').hidden=false;}finally{pageBusy=false;}
+  const sequence=viewSequence,session=viewerSession;
+  try {const result=await loadViewerPage(nextPage);if(sequence!==viewSequence||!$('viewer').open)return;listing=result;state.page=result.page;gridDirty=true;const index=direction>0?0:listing.photos.length-1;if(index>=0)openViewer(listing.photos[index],index);}catch(e){if(sequence===viewSequence&&$('viewer').open&&e.name!=='AbortError'){$('viewer-error').textContent=e.message;$('viewer-error').hidden=false;}}finally{if(session===viewerSession)pageBusy=false;}
 }
 
 async function updateStatus() {
